@@ -17,7 +17,11 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.text.Editable
+import android.text.TextWatcher
+import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -76,6 +80,36 @@ private fun sty(on: Boolean, accent: Int): Sty {
     return if (accent == AMBER) Sty(AMBER_BG, AMBER, 2, AMBER) else Sty(TEAL_BG, TEAL, 2, TEAL)
 }
 
+private class Slot(val id: String, val label: String, val get: () -> Boolean, val set: (Boolean) -> Unit)
+
+private val SLOTS = listOf(
+    Slot("gate", "Ворота", { St.gate }, { St.gate = it }),
+    Slot("bonfire", "Костровая, свет", { St.light[3] }, { St.light[3] = it }),
+    Slot("shed", "Хозблок, свет", { St.light[2] }, { St.light[2] = it }),
+    Slot("alarm_house", "Охрана дома", { St.alarmHouse }, { St.alarmHouse = it }),
+    Slot("alarm_shop", "Охрана мастерской", { St.alarmShop }, { St.alarmShop = it }),
+    Slot("breaker", "Дом: вводной автомат", { St.breaker }, { St.breaker = it }),
+    Slot("floor", "Дом: тёплый пол", { St.floorHeat }, { St.floorHeat = it }),
+    Slot("garland", "Дом: гирлянда", { St.garland }, { St.garland = it }),
+    Slot("spot_balcony", "Дом: прожектор балкон", { St.spotBalcony }, { St.spotBalcony = it }),
+    Slot("spot_garden", "Дом: прожектор огород", { St.spotGarden }, { St.spotGarden = it }),
+    Slot("shop_light", "Мастерская: свет", { St.shopLight }, { St.shopLight = it }),
+    Slot("shop_heat", "Мастерская: отопление", { St.shopHeat }, { St.shopHeat = it }),
+    Slot("facade", "Мастерская: фасад", { St.facade }, { St.facade = it }),
+    Slot("awning", "Мастерская: навес", { St.awning }, { St.awning = it }),
+    Slot("park", "Двор: парковка", { St.yPark }, { St.yPark = it }),
+    Slot("paths", "Двор: дорожки", { St.yPaths }, { St.yPaths = it }),
+    Slot("flood", "Двор: прожекторы", { St.yFlood }, { St.yFlood = it })
+)
+
+private val EPS = listOf(
+    "Центральная Европа" to "https://openapi.tuyaeu.com",
+    "Западная Европа" to "https://openapi-weaz.tuyaeu.com",
+    "Западная Америка" to "https://openapi.tuyaus.com",
+    "Индия" to "https://openapi.tuyain.com",
+    "Китай" to "https://openapi.tuyacn.com"
+)
+
 class MainActivity : Activity() {
     private var u = 1f
     private var screen = "main"
@@ -87,6 +121,7 @@ class MainActivity : Activity() {
         super.onCreate(b)
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        Store.init(this)
         val dm = resources.displayMetrics
         u = minOf(dm.widthPixels, dm.heightPixels) / 800f
         root = FrameLayout(this)
@@ -99,16 +134,19 @@ class MainActivity : Activity() {
         if (screen == "main") super.onBackPressed() else show("main")
     }
 
-    private fun show(name: String) {
+    private fun show(name: String, fetch: Boolean = true) {
         screen = name
         root.removeAllViews()
         val v: View = when (name) {
             "house" -> buildHouse()
             "shop" -> buildShop()
             "yard" -> buildYard()
+            "settings" -> buildSettings()
+            "bind" -> buildBind()
             else -> buildMain()
         }
         root.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
+        if (fetch && name != "settings" && name != "bind") refresh()
     }
 
     // ---------- помощники ----------
@@ -237,7 +275,7 @@ class MainActivity : Activity() {
     }
 
     private fun settingsBtn(): LinearLayout {
-        val c = card(PANEL, LINE, 1, 22, false) { toast("Настройки: появятся позже") }
+        val c = card(PANEL, LINE, 1, 22, false) { show("settings") }
         c.add(icon(R.drawable.ic_gear, TEAL), px(30), px(30), mr = 14)
         c.add(txt("Настройки", 24, TEXT, true))
         return c
@@ -313,8 +351,8 @@ class MainActivity : Activity() {
 
         val right = lin(false)
         right.add(setpointCard(), 0, MATCH, 1.4f, mr = 16)
-        right.add(alarm("дома", St.alarmHouse) { St.alarmHouse = !St.alarmHouse; show("main") }, 0, MATCH, 1f, mr = 16)
-        right.add(alarm("мастерской", St.alarmShop) { St.alarmShop = !St.alarmShop; show("main") }, 0, MATCH, 1f)
+        right.add(alarm("дома", St.alarmHouse) { flip("alarm_house") }, 0, MATCH, 1f, mr = 16)
+        right.add(alarm("мастерской", St.alarmShop) { flip("alarm_shop") }, 0, MATCH, 1f)
         val bottom = lin(false)
         bottom.add(gateCard(), px(340), MATCH, mr = 16)
         bottom.add(right, 0, MATCH, 1f)
@@ -342,10 +380,7 @@ class MainActivity : Activity() {
             0 -> show("house")
             1 -> show("shop")
             4 -> show("yard")
-            else -> {
-                St.light[i] = !St.light[i]
-                show("main")
-            }
+            else -> flip(if (i == 2) "shed" else "bonfire")
         }
     }
 
@@ -365,6 +400,12 @@ class MainActivity : Activity() {
         cam.isClickable = true
         cam.setOnClickListener { toast("Камера: видео подключим позже") }
         f.addView(cam, flp(Gravity.END or Gravity.TOP, 20))
+        val gear = pillBox()
+        gear.add(icon(R.drawable.ic_gear, TEAL), px(26), px(26), mr = 10)
+        gear.add(txt("Подключения", 20, TEXT))
+        gear.isClickable = true
+        gear.setOnClickListener { show("settings") }
+        f.addView(gear, flp(Gravity.END or Gravity.BOTTOM, 20))
         if (TEMPS[St.selected].isNotEmpty()) {
             val t = pillBox()
             t.addView(txt("Сейчас " + TEMPS[St.selected], 20, SOFT))
@@ -374,7 +415,7 @@ class MainActivity : Activity() {
     }
 
     private fun gateCard(): LinearLayout {
-        val c = card(PANEL, LINE, 1, 22, false) { St.gate = !St.gate; show("main") }
+        val c = card(PANEL, LINE, 1, 22, false) { flip("gate") }
         c.add(chip(R.drawable.ic_gate, 68, 40, CHIP, SOFT), px(68), px(68), mr = 18)
         val t = lin(true)
         t.add(txt("Ворота", 32, TEXT, true))
@@ -438,7 +479,7 @@ class MainActivity : Activity() {
     private fun breakerCard(): LinearLayout {
         val on = St.breaker
         val c = card(BRK_BG, SOFT, 2, 22, true) {
-            if (St.breaker) confirmOff() else { St.breaker = true; show("house") }
+            if (St.breaker) confirmOff() else flip("breaker")
         }
         c.add(icon(R.drawable.ic_breaker, SOFT), px(130), px(130))
         c.add(txt("Вводной автомат", 32, TEXT, true), mt = 12)
@@ -451,7 +492,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this)
             .setTitle("Вводной автомат")
             .setMessage("Отключить вводной автомат дома?")
-            .setPositiveButton("Отключить") { _, _ -> St.breaker = false; show("house") }
+            .setPositiveButton("Отключить") { _, _ -> flip("breaker") }
             .setNegativeButton("Отмена", null)
             .show()
     }
@@ -459,7 +500,7 @@ class MainActivity : Activity() {
     private fun tileFloor(): View {
         val b = tog(R.drawable.ic_floor, if (St.floorHeat) "Включён" else "Выключен",
             if (St.floorHeat) "нажмите, чтобы выключить" else "нажмите, чтобы включить", St.floorHeat, TEAL) {
-            St.floorHeat = !St.floorHeat; show("house")
+            flip("floor")
         }
         return tile(R.drawable.ic_floor, "Тёплый пол", "Ванная", b)
     }
@@ -467,11 +508,11 @@ class MainActivity : Activity() {
     private fun tileLight(): View {
         val body = lin(false)
         body.add(tog(R.drawable.ic_garland, "Гирлянда", if (St.garland) "включена" else "выключена", St.garland, AMBER) {
-            St.garland = !St.garland; show("house")
+            flip("garland")
         }, px(128), MATCH, mr = 12)
         val col = lin(true)
-        col.add(spot("Прожектор балкон", St.spotBalcony) { St.spotBalcony = !St.spotBalcony; show("house") }, MATCH, 0, 1f, mb = 10)
-        col.add(spot("Прожектор огород", St.spotGarden) { St.spotGarden = !St.spotGarden; show("house") }, MATCH, 0, 1f)
+        col.add(spot("Прожектор балкон", St.spotBalcony) { flip("spot_balcony") }, MATCH, 0, 1f, mb = 10)
+        col.add(spot("Прожектор огород", St.spotGarden) { flip("spot_garden") }, MATCH, 0, 1f)
         body.add(col, 0, MATCH, 1f)
         return tile(R.drawable.ic_bulb, "Освещение", "гирлянда и прожекторы", body)
     }
@@ -525,16 +566,16 @@ class MainActivity : Activity() {
         main.add(big, px(400), MATCH, mr = 16)
         val act = lin(true)
         act.add(tog(R.drawable.ic_bulb, "Свет", if (St.shopLight) "включён" else "выключен", St.shopLight, AMBER) {
-            St.shopLight = !St.shopLight; show("shop")
+            flip("shop_light")
         }, MATCH, 0, 1f, mb = 16)
         act.add(tog(R.drawable.ic_radiator, "Отопление", if (St.shopHeat) "включено" else "выключено", St.shopHeat, TEAL) {
-            St.shopHeat = !St.shopHeat; show("shop")
+            flip("shop_heat")
         }, MATCH, 0, 1f, mb = 16)
         act.add(tog(R.drawable.ic_camera, "Камера", "смотреть", false, AMBER) { toast("Камера: видео подключим позже") }, MATCH, 0, 1f)
         main.add(act, px(220), MATCH, mr = 16)
         val lt = lin(true)
-        lt.add(lightRow(R.drawable.ic_bulb, "Освещение фасада", St.facade) { St.facade = !St.facade; show("shop") }, MATCH, px(170), mb = 16)
-        lt.add(lightRow(R.drawable.ic_awning, "Освещение навеса", St.awning) { St.awning = !St.awning; show("shop") }, MATCH, px(170))
+        lt.add(lightRow(R.drawable.ic_bulb, "Освещение фасада", St.facade) { flip("facade") }, MATCH, px(170), mb = 16)
+        lt.add(lightRow(R.drawable.ic_awning, "Освещение навеса", St.awning) { flip("awning") }, MATCH, px(170))
         main.add(lt, 0, MATCH, 1f)
         pg.add(main, MATCH, 0, 1f, mb = 16)
         val bot = lin(false)
@@ -565,19 +606,17 @@ class MainActivity : Activity() {
         val main = lin(false)
         val nav = lin(true)
         nav.add(rowCard(R.drawable.ic_parking, "Парковка", if (St.yPark) "включено" else "выключено", St.yPark) {
-            St.yPark = !St.yPark; show("yard")
+            flip("park")
         }, MATCH, 0, 1f, mb = 10)
         nav.add(rowCard(R.drawable.ic_route, "Дорожки", if (St.yPaths) "включено" else "выключено", St.yPaths) {
-            St.yPaths = !St.yPaths; show("yard")
+            flip("paths")
         }, MATCH, 0, 1f, mb = 10)
         nav.add(rowCard(R.drawable.ic_flood, "Прожекторы", if (St.yFlood) "включено" else "выключено", St.yFlood) {
-            St.yFlood = !St.yFlood; show("yard")
+            flip("flood")
         }, MATCH, 0, 1f, mb = 10)
         val all = St.yPark && St.yPaths && St.yFlood
         nav.add(rowCard(R.drawable.ic_bulb, "Весь двор", if (all) "выключить всё" else "включить всё", all) {
-            val v = !all
-            St.yPark = v; St.yPaths = v; St.yFlood = v
-            show("yard")
+            yardAll(!all)
         }, MATCH, 0, 1f)
         main.add(nav, px(340), MATCH, mr = 16)
         val sc = FrameLayout(this)
@@ -596,6 +635,196 @@ class MainActivity : Activity() {
         cam.add(txt("Камеры двора", 24, TEXT, true))
         bot.add(cam, 0, MATCH, 1f)
         pg.add(bot, MATCH, px(110))
+        return pg
+    }
+    // ---------- подключение устройств ----------
+    private var refreshing = false
+    private var lastRefresh = 0L
+
+    private fun slotOf(id: String): Slot = SLOTS.first { it.id == id }
+
+    private fun flip(id: String) {
+        val sl = slotOf(id)
+        val want = !sl.get()
+        val b = Store.get("bind_" + id)
+        if (b.isEmpty()) {
+            sl.set(want)
+            show(screen, false)
+            return
+        }
+        Net.bg {
+            val err = Drivers.set(b, want)
+            Net.ui {
+                if (err == null) sl.set(want) else toast("Ошибка: " + err)
+                show(screen, false)
+            }
+        }
+    }
+
+    private fun yardAll(v: Boolean) {
+        for (id in listOf("park", "paths", "flood")) {
+            if (slotOf(id).get() != v) flip(id)
+        }
+    }
+
+    private fun refresh() {
+        if (refreshing) return
+        if (System.currentTimeMillis() - lastRefresh < 3000L) return
+        val bound = SLOTS.filter { Store.get("bind_" + it.id).isNotEmpty() }
+        if (bound.isEmpty()) return
+        refreshing = true
+        lastRefresh = System.currentTimeMillis()
+        Net.bg {
+            val binds = HashMap<String, String>()
+            for (sl in bound) binds[sl.id] = Store.get("bind_" + sl.id)
+            val res = Drivers.states(binds)
+            Net.ui {
+                refreshing = false
+                var changed = false
+                for (sl in bound) {
+                    val v = res[sl.id]
+                    if (v != null && v != sl.get()) {
+                        sl.set(v)
+                        changed = true
+                    }
+                }
+                if (changed && screen != "settings" && screen != "bind") show(screen, false)
+            }
+        }
+    }
+
+    private fun field(label: String, key: String): LinearLayout {
+        val r = lin(false, Gravity.CENTER_VERTICAL)
+        r.add(txt(label, 20, MUTED), px(220), WRAP)
+        val e = EditText(this)
+        e.setText(Store.get(key))
+        e.setTextSize(TypedValue.COMPLEX_UNIT_PX, 20 * u)
+        e.setTextColor(TEXT)
+        e.setSingleLine(true)
+        e.background = bg(CHIP, LINE, 1, 12)
+        e.setPadding(px(14), px(10), px(14), px(10))
+        e.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                Store.put(key, (s?.toString() ?: "").trim())
+                Drivers.reset()
+            }
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+            override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
+        })
+        r.add(e, 0, WRAP, 1f)
+        return r
+    }
+
+    private fun epLabel(): String {
+        val e = Store.get("tuya_ep")
+        val f = EPS.firstOrNull { it.second == e }
+        return if (f != null) f.first else EPS[0].first
+    }
+
+    private fun pickEndpoint() {
+        val names = EPS.map { it.first }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Дата-центр Tuya")
+            .setItems(names) { _, i ->
+                Store.put("tuya_ep", EPS[i].second)
+                Drivers.reset()
+                show("settings", false)
+            }
+            .show()
+    }
+
+    private fun runTuyaCheck(out: TextView) {
+        out.text = "Подключаюсь…"
+        Net.bg {
+            val msg: String = try {
+                val list = Drivers.tuya().devices()
+                Store.put("tuya_devs", Dev.toJson(list))
+                val sb = StringBuilder("Найдено устройств: " + list.size + "\n")
+                for (d in list) {
+                    sb.append(d.name)
+                    sb.append(if (d.online) " · в сети · " else " · не в сети · ")
+                    sb.append(d.codes.joinToString(","))
+                    sb.append("\n")
+                }
+                sb.toString()
+            } catch (e: Exception) {
+                "Ошибка: " + (e.message ?: e.toString())
+            }
+            Store.put("tuya_log", msg)
+            Net.ui { out.text = msg }
+        }
+    }
+
+    private fun buildSettings(): View {
+        val pg = page()
+        pg.add(header("Подключения", R.drawable.ic_gear), MATCH, px(64), mb = 12)
+        val sv = ScrollView(this)
+        val col = lin(true)
+        col.add(txt("Smart Life (Tuya, облако)", 24, TEXT, true), mb = 10)
+        col.add(field("Access ID", "tuya_id"), MATCH, WRAP, mb = 10)
+        col.add(field("Access Secret", "tuya_secret"), MATCH, WRAP, mb = 10)
+        col.add(field("UID аккаунта", "tuya_uid"), MATCH, WRAP, mb = 10)
+        val dc = card(CHIP, LINE, 1, 12, false) { pickEndpoint() }
+        dc.add(txt("Дата-центр: " + epLabel() + " (нажмите, чтобы изменить)", 20, TEXT))
+        col.add(dc, MATCH, px(52), mb = 10)
+        val out = txt(Store.get("tuya_log").ifEmpty { "Нажмите «Проверить»" }, 17, MUTED)
+        val check = card(AMBER_BG, AMBER, 2, 12, false) { runTuyaCheck(out) }
+        check.add(txt("Проверить и загрузить устройства", 20, AMBER, true))
+        col.add(check, MATCH, px(52), mb = 10)
+        col.add(out, MATCH, WRAP, mb = 20)
+        val bind = card(PANEL, LINE, 1, 12, false) { show("bind") }
+        bind.add(txt("Привязка кнопок к устройствам", 20, TEXT, true))
+        col.add(bind, MATCH, px(52), mb = 10)
+        sv.addView(col, FrameLayout.LayoutParams(MATCH, WRAP))
+        pg.add(sv, MATCH, 0, 1f, mb = 12)
+        val back = card(PANEL, LINE, 1, 22, false) { show("main") }
+        back.add(txt("Назад", 24, TEXT, true))
+        pg.add(back, MATCH, px(72))
+        return pg
+    }
+
+    private fun pickDevice(sl: Slot) {
+        val devs = Dev.fromJson(Store.get("tuya_devs"))
+        if (devs.isEmpty()) toast("Сначала загрузите устройства на экране «Подключения»")
+        val names = ArrayList<String>()
+        val refs = ArrayList<String>()
+        names.add("— не подключено (демо) —")
+        refs.add("")
+        for (d in devs) {
+            for (c in d.codes) {
+                names.add(d.name + " · " + c)
+                refs.add("tuya|" + d.id + "|" + c + "|" + d.name + " · " + c)
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle(sl.label)
+            .setItems(names.toTypedArray()) { _, i ->
+                Store.put("bind_" + sl.id, refs[i])
+                show("bind", false)
+            }
+            .show()
+    }
+
+    private fun buildBind(): View {
+        val pg = page()
+        pg.add(header("Привязка кнопок", R.drawable.ic_gear), MATCH, px(64), mb = 12)
+        val sv = ScrollView(this)
+        val col = lin(true)
+        for (sl in SLOTS) {
+            val b = Store.get("bind_" + sl.id)
+            val shown = if (b.isEmpty()) "не подключено (демо)" else b.split("|").getOrElse(3) { "?" }
+            val row = card(PANEL, LINE, 1, 14, false) { pickDevice(sl) }
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.setPadding(px(20), 0, px(20), 0)
+            row.add(txt(sl.label, 22, TEXT, true), 0, WRAP, 1f)
+            row.add(txt(shown, 18, if (b.isEmpty()) MUTED else TEAL))
+            col.add(row, MATCH, px(60), mb = 8)
+        }
+        sv.addView(col, FrameLayout.LayoutParams(MATCH, WRAP))
+        pg.add(sv, MATCH, 0, 1f, mb = 12)
+        val back = card(PANEL, LINE, 1, 22, false) { show("settings", false) }
+        back.add(txt("Назад", 24, TEXT, true))
+        pg.add(back, MATCH, px(72))
         return pg
     }
 }
