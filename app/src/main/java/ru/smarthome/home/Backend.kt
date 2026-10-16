@@ -194,6 +194,41 @@ class Tuya(private val base: String, private val clientId: String, private val s
         return out
     }
 
+    // свойства по модели данных устройства (для устройств с нестандартными кодами, например счётчика)
+    private fun propertyCodes(id: String): List<String> {
+        val out = ArrayList<String>()
+        try {
+            val j = api("GET", "/v2.0/cloud/thing/" + id + "/shadow/properties", "")
+            val r = j.optJSONObject("result") ?: return out
+            val ps = r.optJSONArray("properties") ?: return out
+            for (i in 0 until ps.length()) {
+                val x = ps.getJSONObject(i)
+                if (x.opt("value") is Boolean) out.add(x.optString("code") + "@p")
+            }
+        } catch (e: Exception) {
+        }
+        return out
+    }
+
+    fun propsAll(id: String): Map<String, Any> {
+        val j = api("GET", "/v2.0/cloud/thing/" + id + "/shadow/properties", "")
+        val m = HashMap<String, Any>()
+        val r = j.optJSONObject("result") ?: return m
+        val ps = r.optJSONArray("properties") ?: return m
+        for (i in 0 until ps.length()) {
+            val x = ps.getJSONObject(i)
+            val v = x.opt("value")
+            if (v != null) m[x.optString("code")] = v
+        }
+        return m
+    }
+
+    fun setProp(id: String, code: String, v: Boolean) {
+        val inner = "{\"" + code + "\":" + v.toString() + "}"
+        val body = JSONObject().put("properties", inner).toString()
+        api("POST", "/v2.0/cloud/thing/" + id + "/shadow/properties/issue", body)
+    }
+
     private fun describe(st: JSONArray?): String {
         if (st == null || st.length() == 0) return "нет данных о состоянии"
         val sb = StringBuilder("состояние: ")
@@ -223,8 +258,12 @@ class Tuya(private val base: String, private val clientId: String, private val s
                 }
             }
             val fc = functionCodes(id)
-            val all = if (fc.isNotEmpty()) fc else statusCodes
-            val info = if (all.isEmpty()) describe(st) else ""
+            var all: List<String> = if (fc.isNotEmpty()) fc else statusCodes
+            var info = ""
+            if (all.isEmpty()) {
+                val pc = propertyCodes(id)
+                if (pc.isNotEmpty()) all = pc else info = describe(st)
+            }
             out.add(Dev(id, o.optString("name").replace("|", "/"), o.optBoolean("online"), all, info))
         }
         return out
@@ -274,15 +313,21 @@ object Drivers {
         return t
     }
 
-    // привязка: «tuya|id устройства|код|название» и для режимов охраны ещё «|значение вкл|значение выкл»
+    // привязка: «tuya|id|код|название» (стандартные команды), «tuyap|id|код|название» (свойства модели данных)
+    // и для режимов охраны ещё «|значение вкл|значение выкл»
     fun set(b: String, on: Boolean): String? {
         try {
             val p = b.split("|")
-            if (p[0] != "tuya") throw Exception("Неизвестный тип привязки")
-            if (p.size >= 6) {
-                tuya().setRaw(p[1], p[2], "\"" + (if (on) p[4] else p[5]) + "\"")
+            if (p[0] == "tuyap") {
+                tuya().setProp(p[1], p[2], on)
+            } else if (p[0] == "tuya") {
+                if (p.size >= 6) {
+                    tuya().setRaw(p[1], p[2], "\"" + (if (on) p[4] else p[5]) + "\"")
+                } else {
+                    tuya().setBool(p[1], p[2], on)
+                }
             } else {
-                tuya().setBool(p[1], p[2], on)
+                throw Exception("Неизвестный тип привязки")
             }
             return null
         } catch (e: Exception) {
@@ -296,18 +341,18 @@ object Drivers {
         for ((slot, b) in binds) {
             try {
                 val p = b.split("|")
-                if (p[0] == "tuya") {
-                    var m = cache[p[1]]
-                    if (m == null) {
-                        m = tuya().statusAll(p[1])
-                        cache[p[1]] = m
-                    }
-                    val v = m[p[2]]
-                    if (v is Boolean) {
-                        out[slot] = v
-                    } else if (v is String && p.size >= 6) {
-                        out[slot] = (v == p[4])
-                    }
+                if (p[0] != "tuya" && p[0] != "tuyap") continue
+                val key = p[0] + ":" + p[1]
+                var m = cache[key]
+                if (m == null) {
+                    m = if (p[0] == "tuyap") tuya().propsAll(p[1]) else tuya().statusAll(p[1])
+                    cache[key] = m
+                }
+                val v = m[p[2]]
+                if (v is Boolean) {
+                    out[slot] = v
+                } else if (v is String && p.size >= 6) {
+                    out[slot] = (v == p[4])
                 }
             } catch (e: Exception) {
             }

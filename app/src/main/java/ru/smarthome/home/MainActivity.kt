@@ -793,9 +793,11 @@ class MainActivity : Activity() {
         for (d in devs) {
             for (c in d.codes) {
                 val parts = c.split("#")
+                val isProp = parts[0].endsWith("@p")
+                val code = if (isProp) parts[0].substring(0, parts[0].length - 2) else parts[0]
                 val extra = if (parts.size == 3) " (" + parts[1] + "/" + parts[2] + ")" else ""
-                names.add(d.name + " · " + parts[0] + extra)
-                refs.add("tuya|" + d.id + "|" + parts[0] + "|" + d.name + " · " + parts[0] + (if (parts.size == 3) "|" + parts[1] + "|" + parts[2] else ""))
+                names.add(d.name + " · " + code + (if (isProp) " (свойство)" else "") + extra)
+                refs.add((if (isProp) "tuyap" else "tuya") + "|" + d.id + "|" + code + "|" + d.name + " · " + code + (if (parts.size == 3) "|" + parts[1] + "|" + parts[2] else ""))
             }
         }
         AlertDialog.Builder(this)
