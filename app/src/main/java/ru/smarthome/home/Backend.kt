@@ -284,6 +284,22 @@ class Tuya(private val base: String, private val clientId: String, private val s
         return m
     }
 
+    fun spec(id: String): JSONObject =
+        api("GET", "/v1.0/devices/" + id + "/specifications", "").optJSONObject("result") ?: JSONObject()
+
+    fun describeDevice(id: String): String {
+        val sb = StringBuilder("Команды:\n")
+        val fs = spec(id).optJSONArray("functions") ?: JSONArray()
+        for (i in 0 until fs.length()) {
+            val f = fs.getJSONObject(i)
+            sb.append("  ").append(f.optString("code")).append(" (").append(f.optString("type")).append(") ")
+                .append(f.optString("values")).append("\n")
+        }
+        sb.append("Состояние:\n")
+        for ((k, v) in statusAll(id)) sb.append("  ").append(k).append(" = ").append(v.toString()).append("\n")
+        return sb.toString()
+    }
+
     fun setRaw(id: String, code: String, rawJson: String) {
         val body = "{\"commands\":[{\"code\":\"" + code + "\",\"value\":" + rawJson + "}]}"
         api("POST", "/v1.0/devices/" + id + "/commands", body)
@@ -299,11 +315,21 @@ object Drivers {
 
     private var zont: Zont? = null
     private var ewl: Ewelink? = null
+    private val thermos = HashMap<String, Thermo>()
 
     fun reset() {
         tuya = null
         zont = null
         ewl = null
+        thermos.clear()
+    }
+
+    fun thermo(id: String): Thermo {
+        val c = thermos[id]
+        if (c != null) return c
+        val t = Thermo.from(tuya().spec(id))
+        thermos[id] = t
+        return t
     }
 
     fun ewl(): Ewelink {
@@ -640,5 +666,84 @@ class Ewelink(private val appId: String, private val appSecret: String) {
         val body = JSONObject().put("type", 1).put("id", id)
             .put("params", JSONObject().put("switch", if (on) "on" else "off")).toString()
         api("POST", "/v2/device/thing/status", body)
+    }
+}
+
+// терморегулятор Tuya: коды уставки и текущей температуры определяются по спецификации устройства
+class Thermo(val setCode: String, val setScale: Int, val setMin: Double, val setMax: Double, val setStep: Double,
+             val curCode: String, val curScale: Int, val modeCode: String) {
+    fun real(raw: Any?, scale: Int): Double? {
+        val n = (raw as? Number)?.toDouble() ?: return null
+        return n / Math.pow(10.0, scale.toDouble())
+    }
+
+    companion object {
+        private fun vals(o: JSONObject): JSONObject {
+            return try {
+                JSONObject(o.optString("values"))
+            } catch (e: Exception) {
+                JSONObject()
+            }
+        }
+
+        fun setScore(c: String): Int {
+            if (c == "temp_set") return 3
+            if (c.contains("temp_set") || c.contains("set_temp")) return 2
+            if (c.contains("temp") && c.contains("set") && !c.contains("upper") && !c.contains("lower")) return 1
+            return 0
+        }
+
+        fun curScore(c: String): Int {
+            if (c == "temp_current") return 3
+            if (c.contains("temp_current") || c.contains("current_temp")) return 2
+            if (c.contains("temp") && c.contains("current")) return 1
+            return 0
+        }
+
+        fun from(spec: JSONObject): Thermo {
+            var setO: JSONObject? = null
+            var setS = 0
+            var modeCode = ""
+            val fs = spec.optJSONArray("functions") ?: JSONArray()
+            for (i in 0 until fs.length()) {
+                val f = fs.getJSONObject(i)
+                val c = f.optString("code").lowercase()
+                val t = f.optString("type")
+                if (t.equals("Integer", true)) {
+                    val sc = setScore(c)
+                    if (sc > setS) {
+                        setS = sc
+                        setO = f
+                    }
+                }
+                if (t.equals("Enum", true) && c == "mode") modeCode = f.optString("code")
+            }
+            var curO: JSONObject? = null
+            var curS = 0
+            val st = spec.optJSONArray("status") ?: JSONArray()
+            for (i in 0 until st.length()) {
+                val f = st.getJSONObject(i)
+                val c = f.optString("code").lowercase()
+                if (f.optString("type").equals("Integer", true)) {
+                    val sc = curScore(c)
+                    if (sc > curS) {
+                        curS = sc
+                        curO = f
+                    }
+                }
+            }
+            val so = setO
+            val co = curO
+            val sv = if (so != null) vals(so) else JSONObject()
+            val cv = if (co != null) vals(co) else JSONObject()
+            val ss = sv.optInt("scale", 0)
+            val p = Math.pow(10.0, ss.toDouble())
+            return Thermo(
+                so?.optString("code") ?: "", ss,
+                sv.optDouble("min", 5.0 * p) / p, sv.optDouble("max", 35.0 * p) / p,
+                maxOf(sv.optDouble("step", 1.0), 1.0) / p,
+                co?.optString("code") ?: "", cv.optInt("scale", 0), modeCode
+            )
+        }
     }
 }

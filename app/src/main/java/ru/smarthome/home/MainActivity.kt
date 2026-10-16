@@ -74,6 +74,10 @@ object St {
     var houseSet = 22
     var houseTemp = "21,4"
     var houseTempV = 21.4
+    var shopTemp = "14,0"
+    var shopTempV = 14.0
+    var shopSet = 5.5
+    var shopMode = ""
     var shopLight = false
     var shopHeat = true
     var facade = false
@@ -584,13 +588,8 @@ class MainActivity : Activity() {
         val pg = page()
         pg.add(header("Мастерская", R.drawable.ic_shop), MATCH, px(64), mb = 16)
         val main = lin(false)
-        main.add(gaugeCard("+14,0 °C", 0.35f), px(120), MATCH, mr = 16)
-        val big = card(PANEL, LINE, 1, 22, true, null)
-        big.add(icon(R.drawable.ic_house_thin, OFFI), px(150), px(150))
-        big.add(txt("Мастерская", 46, TEXT, true), mt = 12)
-        big.add(txt("14,0 °C", 40, TEAL), mt = 12)
-        big.add(txt("температура в помещении", 18, MUTED), mt = 12)
-        main.add(big, px(400), MATCH, mr = 16)
+        main.add(gaugeCard("+" + St.shopTemp + " °C", (St.shopTempV / 40.0).toFloat().coerceIn(0f, 1f)), px(120), MATCH, mr = 16)
+        main.add(shopThermoCard(false), px(400), MATCH, mr = 16)
         val act = lin(true)
         act.add(tog(R.drawable.ic_bulb, "Свет", if (St.shopLight) "включён" else "выключен", St.shopLight, AMBER) {
             flip("shop_light")
@@ -711,7 +710,90 @@ class MainActivity : Activity() {
 
     private fun zontReady(): Boolean = Store.get("zont_login").isNotEmpty() && Store.get("zont_dev").isNotEmpty()
 
-    private fun tempOf(i: Int): String = if (i == 0) St.houseTemp + " °C" else TEMPS[i]
+    private fun tempOf(i: Int): String = if (i == 0) St.houseTemp + " °C" else if (i == 1) St.shopTemp + " °C" else TEMPS[i]
+
+    private fun thermoId(): String {
+        val p = Store.get("bind_shop_heat").split("|")
+        return if (p.size >= 2 && p[0] == "tuya") p[1] else ""
+    }
+
+    private fun modeName(md: String): String {
+        return when (md) {
+            "hot", "heat", "heating" -> "обогрев"
+            "cold", "cool", "cooling" -> "охлаждение"
+            else -> md
+        }
+    }
+
+    private fun changeShopSet(d: Int) {
+        val tid = thermoId()
+        if (tid.isEmpty()) {
+            toast("Привяжите «Мастерская: отопление» к терморегулятору")
+            return
+        }
+        val cur = St.shopSet
+        Net.bg {
+            var nv = cur
+            val err: String? = try {
+                val th = Drivers.thermo(tid)
+                if (th.setCode.isEmpty()) throw Exception("у устройства не найдена уставка")
+                nv = minOf(th.setMax, maxOf(th.setMin, cur + d * th.setStep))
+                val raw = Math.round(nv * Math.pow(10.0, th.setScale.toDouble()))
+                Drivers.tuya().setRaw(tid, th.setCode, raw.toString())
+                null
+            } catch (e: Exception) {
+                e.message ?: e.toString()
+            }
+            val v = nv
+            Net.ui {
+                if (err == null) St.shopSet = v else toast("Уставка: " + err)
+                show(screen, false)
+            }
+        }
+    }
+
+    private fun shopThermoCard(compact: Boolean): LinearLayout {
+        val k = if (compact) 0.75f else 1f
+        fun sz(v: Int): Int = (v * k).toInt()
+        val c = card(PANEL, LINE, 1, 22, true, null)
+        c.add(txt("Терморегулятор", sz(22), MUTED))
+        c.add(txt(St.shopTemp + " °C", sz(56), TEXT, true), mt = sz(6))
+        c.add(txt("сейчас в мастерской", sz(16), MUTED))
+        val row = lin(false, Gravity.CENTER_VERTICAL)
+        row.add(stepBtn(R.drawable.ic_down) { changeShopSet(-1) }, px(sz(56)), px(sz(56)), mr = sz(14))
+        val mid = lin(true, Gravity.CENTER_HORIZONTAL)
+        mid.add(txt("уставка", sz(15), MUTED))
+        mid.add(txt(fmt1(St.shopSet) + " °C", sz(34), TEAL, true))
+        row.add(mid)
+        row.add(stepBtn(R.drawable.ic_up) { changeShopSet(1) }, px(sz(56)), px(sz(56)), ml = sz(14))
+        c.add(row, WRAP, WRAP, mt = sz(18))
+        if (St.shopMode.isNotEmpty()) c.add(txt("режим: " + modeName(St.shopMode), sz(16), MUTED), mt = sz(10))
+        return c
+    }
+
+    private fun pickDiag(out: TextView) {
+        val devs = Dev.fromJson(Store.get("tuya_devs"))
+        if (devs.isEmpty()) {
+            toast("Сначала загрузите устройства Smart Life")
+            return
+        }
+        val names = devs.map { it.name }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Устройство Smart Life")
+            .setItems(names) { _, i ->
+                val d = devs[i]
+                out.text = "Читаю «" + d.name + "»…"
+                Net.bg {
+                    val msg: String = try {
+                        d.name + "\n" + Drivers.tuya().describeDevice(d.id)
+                    } catch (e: Exception) {
+                        "Ошибка: " + (e.message ?: e.toString())
+                    }
+                    Net.ui { out.text = msg }
+                }
+            }
+            .show()
+    }
 
     private fun refresh() {
         if (refreshing) return
@@ -737,6 +819,23 @@ class MainActivity : Activity() {
                 } catch (e: Exception) {
                 }
             }
+            var tCur: Double? = null
+            var tSet: Double? = null
+            var tMode = ""
+            val tid = thermoId()
+            if (tid.isNotEmpty()) {
+                try {
+                    val th = Drivers.thermo(tid)
+                    val st = Drivers.tuya().statusAll(tid)
+                    tCur = th.real(st[th.curCode], th.curScale)
+                    tSet = th.real(st[th.setCode], th.setScale)
+                    if (th.modeCode.isNotEmpty()) tMode = st[th.modeCode]?.toString() ?: ""
+                } catch (e: Exception) {
+                }
+            }
+            val tc = tCur
+            val ts = tSet
+            val tm = tMode
             val zi = z
             Net.ui {
                 refreshing = false
@@ -770,6 +869,22 @@ class MainActivity : Activity() {
                             changed = true
                         }
                     }
+                }
+                if (tc != null) {
+                    val t = fmt1(tc)
+                    if (t != St.shopTemp) {
+                        St.shopTemp = t
+                        St.shopTempV = tc
+                        changed = true
+                    }
+                }
+                if (ts != null && ts != St.shopSet) {
+                    St.shopSet = ts
+                    changed = true
+                }
+                if (tm != St.shopMode) {
+                    St.shopMode = tm
+                    changed = true
                 }
                 if (changed && screen != "settings" && screen != "bind" && screen != "ewl_login") show(screen, false)
             }
@@ -924,7 +1039,10 @@ class MainActivity : Activity() {
         val check = card(AMBER_BG, AMBER, 2, 12, false) { runTuyaCheck(out) }
         check.add(txt("Проверить и загрузить устройства", 20, AMBER, true))
         col.add(check, MATCH, px(52), mb = 10)
-        col.add(out, MATCH, WRAP, mb = 20)
+        col.add(out, MATCH, WRAP, mb = 10)
+        val diag = card(PANEL, LINE, 1, 12, false) { pickDiag(out) }
+        diag.add(txt("Сведения об устройстве Smart Life", 20, TEXT, true))
+        col.add(diag, MATCH, px(52), mb = 20)
         col.add(txt("eWeLink (Sonoff)", 24, TEXT, true), mt = 10, mb = 10)
         col.add(field("APPID", "ewl_appid"), MATCH, WRAP, mb = 10)
         col.add(field("APP SECRET", "ewl_secret", true), MATCH, WRAP, mb = 10)
@@ -1297,13 +1415,8 @@ class MainActivity : Activity() {
     private fun buildShopP(): View {
         val body = lin(true)
         val top = lin(false)
-        top.add(gaugeCard("+14,0 °C", 0.35f), px(100), MATCH, mr = 12)
-        val big = card(PANEL, LINE, 1, 22, true, null)
-        big.add(icon(R.drawable.ic_house_thin, OFFI), px(110), px(110))
-        big.add(txt("Мастерская", 34, TEXT, true), mt = 8)
-        big.add(txt("14,0 °C", 30, TEAL), mt = 6)
-        big.add(txt("температура в помещении", 15, MUTED), mt = 6)
-        top.add(big, 0, MATCH, 1f)
+        top.add(gaugeCard("+" + St.shopTemp + " °C", (St.shopTempV / 40.0).toFloat().coerceIn(0f, 1f)), px(100), MATCH, mr = 12)
+        top.add(shopThermoCard(true), 0, MATCH, 1f)
         body.add(top, MATCH, px(280), mb = 12)
         val act = lin(false)
         act.add(tog(R.drawable.ic_bulb, "Свет", if (St.shopLight) "включён" else "выключен", St.shopLight, AMBER) { flip("shop_light") }, 0, MATCH, 1f, mr = 10)
