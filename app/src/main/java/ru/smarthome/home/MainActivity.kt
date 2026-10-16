@@ -908,6 +908,39 @@ class MainActivity : Activity() {
         return pg
     }
 
+    private fun refFor(d: Dev, c: String): String {
+        val parts = c.split("#")
+        val isProp = parts[0].endsWith("@p")
+        val code = if (isProp) parts[0].substring(0, parts[0].length - 2) else parts[0]
+        return (if (isProp) "tuyap" else "tuya") + "|" + d.id + "|" + code + "|" + d.name + " · " + code +
+            (if (parts.size == 3) "|" + parts[1] + "|" + parts[2] else "")
+    }
+
+    // автопривязка известных устройств Smart Life; уже заданные привязки не трогает
+    private fun autoBind() {
+        val devs = Dev.fromJson(Store.get("tuya_devs"))
+        if (devs.isEmpty()) {
+            toast("Сначала загрузите устройства на экране «Подключения»")
+            return
+        }
+        val rules = listOf(
+            Triple("breaker", "kws-306wf", "switch_1@p"),
+            Triple("alarm_house", "сигнализация", "master_mode#arm#disarmed"),
+            Triple("shop_heat", "ик отопление мастерская", "switch_1")
+        )
+        var n = 0
+        for ((slot, namePart, code) in rules) {
+            if (Store.get("bind_" + slot).isNotEmpty()) continue
+            val d = devs.firstOrNull { it.online && it.name.lowercase().contains(namePart) && it.codes.contains(code) }
+                ?: devs.firstOrNull { it.name.lowercase().contains(namePart) && it.codes.contains(code) }
+            if (d == null) continue
+            Store.put("bind_" + slot, refFor(d, code))
+            n++
+        }
+        toast("Привязано кнопок: " + n)
+        show("bind", false)
+    }
+
     private fun pickDevice(sl: Slot) {
         val devs = Dev.fromJson(Store.get("tuya_devs"))
         if (devs.isEmpty()) toast("Сначала загрузите устройства на экране «Подключения»")
@@ -922,7 +955,7 @@ class MainActivity : Activity() {
                 val code = if (isProp) parts[0].substring(0, parts[0].length - 2) else parts[0]
                 val extra = if (parts.size == 3) " (" + parts[1] + "/" + parts[2] + ")" else ""
                 names.add(d.name + " · " + code + (if (isProp) " (свойство)" else "") + extra)
-                refs.add((if (isProp) "tuyap" else "tuya") + "|" + d.id + "|" + code + "|" + d.name + " · " + code + (if (parts.size == 3) "|" + parts[1] + "|" + parts[2] else ""))
+                refs.add(refFor(d, c))
             }
         }
         AlertDialog.Builder(this)
@@ -939,6 +972,9 @@ class MainActivity : Activity() {
         pg.add(header("Привязка кнопок", R.drawable.ic_gear), MATCH, px(64), mb = 12)
         val sv = ScrollView(this)
         val col = lin(true)
+        val auto = card(AMBER_BG, AMBER, 2, 12, false) { autoBind() }
+        auto.add(txt("Привязать автоматически (Smart Life)", 20, AMBER, true))
+        col.add(auto, MATCH, px(56), mb = 12)
         for (sl in SLOTS) {
             val b = Store.get("bind_" + sl.id)
             val shown = if (b.isEmpty()) "не подключено (демо)" else b.split("|").getOrElse(3) { "?" }
