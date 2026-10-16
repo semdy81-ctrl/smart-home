@@ -470,13 +470,27 @@ class MainActivity : Activity() {
         }
     }
 
+    // фото выбранного объекта; пока есть только фото дома
+    private fun addPhoto(f: FrameLayout): Boolean {
+        val res = if (St.selected == 0) R.drawable.photo_house else 0
+        if (res == 0) return false
+        val iv = ImageView(this)
+        iv.setImageResource(res)
+        iv.scaleType = ImageView.ScaleType.CENTER_CROP
+        f.addView(iv, FrameLayout.LayoutParams(MATCH, MATCH))
+        f.clipToOutline = true
+        return true
+    }
+
     private fun photo(): View {
         val f = FrameLayout(this)
         f.background = bg(PHOTO, LINE, 1, 22)
-        val c = lin(true, Gravity.CENTER)
-        c.add(txt("Фото объекта управления", 34, FAINT, true))
-        c.add(txt("место под ваше фото или кадр с камеры", 18, FAINT), mt = 10)
-        f.addView(c, FrameLayout.LayoutParams(MATCH, MATCH))
+        if (!addPhoto(f)) {
+            val c = lin(true, Gravity.CENTER)
+            c.add(txt("Фото объекта управления", 34, FAINT, true))
+            c.add(txt("место под ваше фото или кадр с камеры", 18, FAINT), mt = 10)
+            f.addView(c, FrameLayout.LayoutParams(MATCH, MATCH))
+        }
         val nm = pillBox()
         nm.addView(txt(NAMES[St.selected], 24, TEXT, true))
         f.addView(nm, flp(Gravity.START or Gravity.TOP, 20))
@@ -1385,10 +1399,12 @@ class MainActivity : Activity() {
     private fun photoP(): View {
         val f = FrameLayout(this)
         f.background = bg(PHOTO, LINE, 1, 18)
-        val c = lin(true, Gravity.CENTER)
-        c.add(txt("Фото объекта управления", 20, FAINT, true))
-        c.add(txt("место под ваше фото или кадр с камеры", 13, FAINT), mt = 6)
-        f.addView(c, FrameLayout.LayoutParams(MATCH, MATCH))
+        if (!addPhoto(f)) {
+            val c = lin(true, Gravity.CENTER)
+            c.add(txt("Фото объекта управления", 20, FAINT, true))
+            c.add(txt("место под ваше фото или кадр с камеры", 13, FAINT), mt = 6)
+            f.addView(c, FrameLayout.LayoutParams(MATCH, MATCH))
+        }
         f.addView(pillP(null, NAMES[St.selected], TEXT, null), flp(Gravity.START or Gravity.TOP, 12))
         f.addView(pillP(R.drawable.ic_camera, "Камера", TEXT) { toast("Камера: видео подключим позже") }, flp(Gravity.END or Gravity.TOP, 12))
         val t = tempOf(St.selected)
