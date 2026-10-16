@@ -60,16 +60,16 @@ private val NAV_ICONS = intArrayOf(R.drawable.ic_house, R.drawable.ic_shop, R.dr
 
 object St {
     var selected = 0
-    val light = booleanArrayOf(true, false, false, true, true)
+    val light = booleanArrayOf(false, false, false, false, false)
     var setpoint = 22
     var gate = false
-    var alarmHouse = true
+    var alarmHouse = false
     var alarmShop = false
     var breaker = true
-    var floorHeat = true
-    var garland = true
+    var floorHeat = false
+    var garland = false
     var spotBalcony = false
-    var spotGarden = true
+    var spotGarden = false
     var houseHeat = true
     var houseSet = 22
     var houseTemp = "21,4"
@@ -80,11 +80,11 @@ object St {
     var shopMode = ""
     var shopRelay: Boolean? = null
     var shopLight = false
-    var shopHeat = true
+    var shopHeat = false
     var facade = false
-    var awning = true
-    var yPark = true
-    var yPaths = true
+    var awning = false
+    var yPark = false
+    var yPaths = false
     var yFlood = false
 }
 
@@ -137,6 +137,7 @@ class MainActivity : Activity() {
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         Store.init(this)
+        restoreState()
         // планшет — альбомная ориентация, телефон — книжная (поворот по желанию пользователя)
         requestedOrientation = if (resources.configuration.smallestScreenWidthDp >= 600)
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_FULL_USER
@@ -165,7 +166,52 @@ class MainActivity : Activity() {
         if (screen == "main") super.onBackPressed() else show("main")
     }
 
+    // ---------- сохранение положения приборов между запусками ----------
+    private fun saveState() {
+        for (sl in SLOTS) Store.put("st_" + sl.id, if (sl.get()) "1" else "0")
+        Store.put("st_houseHeat", if (St.houseHeat) "1" else "0")
+        Store.put("st_houseSet", St.houseSet.toString())
+        Store.put("st_houseTemp", St.houseTemp)
+        Store.put("st_shopTemp", St.shopTemp)
+        Store.put("st_shopSet", St.shopSet.toString())
+        Store.put("st_selected", St.selected.toString())
+    }
+
+    private fun restoreState() {
+        for (sl in SLOTS) {
+            val v = Store.get("st_" + sl.id)
+            if (v.isNotEmpty()) sl.set(v == "1")
+        }
+        val hh = Store.get("st_houseHeat")
+        if (hh.isNotEmpty()) St.houseHeat = hh == "1"
+        Store.get("st_houseSet").toIntOrNull()?.let { St.houseSet = it }
+        val ht = Store.get("st_houseTemp")
+        if (ht.isNotEmpty()) {
+            St.houseTemp = ht
+            ht.replace(',', '.').toDoubleOrNull()?.let { St.houseTempV = it }
+        }
+        val stt = Store.get("st_shopTemp")
+        if (stt.isNotEmpty()) {
+            St.shopTemp = stt
+            stt.replace(',', '.').toDoubleOrNull()?.let { St.shopTempV = it }
+        }
+        Store.get("st_shopSet").toDoubleOrNull()?.let { St.shopSet = it }
+        val sel = Store.get("st_selected").toIntOrNull()
+        if (sel != null && sel in 0..4) St.selected = sel
+    }
+
+    // лампочка на плитке объекта: горит, если включён любой свет этого объекта
+    private fun lightOf(i: Int): Boolean {
+        return when (i) {
+            0 -> St.garland || St.spotBalcony || St.spotGarden
+            1 -> St.shopLight || St.facade || St.awning
+            4 -> St.yPark || St.yPaths || St.yFlood
+            else -> St.light[i]
+        }
+    }
+
     private fun show(name: String, fetch: Boolean = true) {
+        saveState()
         screen = name
         root.removeAllViews()
         val v: View = when (name) {
@@ -402,7 +448,7 @@ class MainActivity : Activity() {
         c.add(chip(NAV_ICONS[i], 52, 28, if (sel) AMBER_CHIP else CHIP, if (sel) AMBER else SOFT), px(52), px(52), mr = 16)
         c.add(txt(NAMES[i], 28, TEXT, true), 0, WRAP, 1f)
         if (tempOf(i).isNotEmpty()) c.add(txt(tempOf(i), 20, SOFT), WRAP, WRAP, mr = 10)
-        c.add(icon(R.drawable.ic_bulb, if (St.light[i]) AMBER else OFFI), px(26), px(26))
+        c.add(icon(R.drawable.ic_bulb, if (lightOf(i)) AMBER else OFFI), px(26), px(26))
         return c
     }
 
@@ -1347,7 +1393,7 @@ class MainActivity : Activity() {
         val t = tempOf(i)
         if (t.isNotEmpty()) tx.add(txt(t, 13, SOFT), mt = 2)
         c.add(tx, 0, WRAP, 1f)
-        c.add(icon(R.drawable.ic_bulb, if (St.light[i]) AMBER else OFFI), px(18), px(18))
+        c.add(icon(R.drawable.ic_bulb, if (lightOf(i)) AMBER else OFFI), px(18), px(18))
         return c
     }
 
