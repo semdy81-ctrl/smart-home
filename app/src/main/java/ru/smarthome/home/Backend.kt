@@ -4,9 +4,11 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.UUID
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -294,8 +296,22 @@ class Tuya(private val base: String, private val clientId: String, private val s
 object Drivers {
     private var tuya: Tuya? = null
 
+    private var zont: Zont? = null
+
     fun reset() {
         tuya = null
+        zont = null
+    }
+
+    fun zont(): Zont {
+        val cur = zont
+        if (cur != null) return cur
+        val login = Store.get("zont_login")
+        val pass = Store.get("zont_pass")
+        if (login.isEmpty() || pass.isEmpty()) throw Exception("Заполните логин и пароль ZONT")
+        val z = Zont(login, pass, Store.get("zont_mail").ifEmpty { login })
+        zont = z
+        return z
     }
 
     fun tuya(): Tuya {
@@ -358,5 +374,105 @@ object Drivers {
             }
         }
         return out
+    }
+}
+
+fun fmt1(v: Double): String = String.format(Locale("ru"), "%.1f", v)
+
+class ZontError(m: String) : Exception(m)
+
+// ZONT: официальный API zont-online.ru (вход по логину и паролю, заголовок X-ZONT-Client)
+class Zont(private val login: String, private val password: String, private val client: String) {
+    private val bases = listOf("https://zont-online.ru/api/", "https://my.zont.online/api/")
+    private var base = ""
+
+    private fun post(method: String, body: JSONObject): JSONObject {
+        val auth = "Basic " + Base64.encodeToString((login + ":" + password).toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val h = HashMap<String, String>()
+        h["Authorization"] = auth
+        h["X-ZONT-Client"] = client
+        h["Content-Type"] = "application/json"
+        var last: Exception? = null
+        val order = if (base.isNotEmpty()) listOf(base) else bases
+        for (b in order) {
+            try {
+                val text = Net.call("POST", b + method, h, body.toString())
+                val j = JSONObject(text)
+                base = b
+                if (!j.optBoolean("ok")) {
+                    val ui = j.optString("error_ui", "")
+                    throw ZontError(if (ui.isNotEmpty()) ui else j.optString("error", "ошибка"))
+                }
+                return j
+            } catch (e: ZontError) {
+                throw e
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        throw Exception("Нет связи с сервером ZONT: " + (last?.message ?: ""))
+    }
+
+    fun devices(): JSONArray {
+        val j = post("devices", JSONObject().put("load_io", true))
+        return j.optJSONArray("devices") ?: JSONArray()
+    }
+
+    fun update(deviceId: Long, params: JSONObject) {
+        params.put("device_id", deviceId)
+        post("update_device", params)
+    }
+}
+
+class ZontInfo(val id: Long, val name: String, val mode: String, val comfort: Double, val current: Double?,
+               val boilerOn: Boolean, val fail: Boolean, val keys: String) {
+    companion object {
+        fun from(d: JSONObject): ZontInfo {
+            val temps = d.optJSONObject("thermostat_mode_temps")
+            val comfort = if (temps != null && temps.has("comfort")) temps.optDouble("comfort", Double.NaN) else Double.NaN
+            var cur: Double? = null
+            val th = d.optJSONArray("thermometers")
+            if (th != null) {
+                for (i in 0 until th.length()) {
+                    val t = th.getJSONObject(i)
+                    if (!t.optBoolean("is_assigned_to_slot", true)) continue
+                    if (t.isNull("last_value")) continue
+                    val v = t.optDouble("last_value", Double.NaN)
+                    if (v.isNaN()) continue
+                    val control = t.optString("function") == "control"
+                    if (cur == null || control) cur = v
+                    if (control) break
+                }
+            }
+            val io = d.optJSONObject("io")
+            val st = io?.optJSONObject("last-boiler-state")
+            var mode = if (d.isNull("thermostat_mode")) "" else d.optString("thermostat_mode", "")
+            if (mode.isEmpty() && st != null && !st.isNull("thermostat_mode")) mode = st.optString("thermostat_mode", "")
+            val on = st != null && st.optInt("boiler_work_time", 0) > 0
+            val fail = st != null && st.optBoolean("fail", false)
+            val ks = StringBuilder()
+            val it = d.keys()
+            var n = 0
+            while (it.hasNext() && n < 25) {
+                ks.append(it.next()).append(" ")
+                n++
+            }
+            return ZontInfo(d.optLong("device_id"), d.optString("name"), mode, comfort, cur, on, fail, ks.toString())
+        }
+    }
+
+    fun describe(): String {
+        val sb = StringBuilder(name + " (ID " + id + ")")
+        if (mode.isEmpty()) {
+            sb.append(": режим не найден, поля: ").append(keys)
+            return sb.toString()
+        }
+        sb.append(": режим ").append(mode)
+        if (!comfort.isNaN()) sb.append(", комфорт ").append(fmt1(comfort)).append(" °C")
+        val c = current
+        if (c != null) sb.append(", сейчас ").append(fmt1(c)).append(" °C")
+        sb.append(if (boilerOn) ", котёл работает" else ", котёл не работает")
+        if (fail) sb.append(", АВАРИЯ котла")
+        return sb.toString()
     }
 }

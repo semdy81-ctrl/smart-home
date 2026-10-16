@@ -18,6 +18,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.text.Editable
+import android.text.InputType
 import android.text.TextWatcher
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -26,6 +27,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONObject
 
 private val BG = 0xFF12171D.toInt()
 private val PANEL = 0xFF1E252E.toInt()
@@ -64,6 +66,8 @@ object St {
     var spotGarden = true
     var houseHeat = true
     var houseSet = 22
+    var houseTemp = "21,4"
+    var houseTempV = 21.4
     var shopLight = false
     var shopHeat = true
     var facade = false
@@ -369,7 +373,7 @@ class MainActivity : Activity() {
         c.setOnClickListener { onNav(i) }
         c.add(chip(NAV_ICONS[i], 52, 28, if (sel) AMBER_CHIP else CHIP, if (sel) AMBER else SOFT), px(52), px(52), mr = 16)
         c.add(txt(NAMES[i], 28, TEXT, true), 0, WRAP, 1f)
-        if (TEMPS[i].isNotEmpty()) c.add(txt(TEMPS[i], 20, SOFT), WRAP, WRAP, mr = 10)
+        if (tempOf(i).isNotEmpty()) c.add(txt(tempOf(i), 20, SOFT), WRAP, WRAP, mr = 10)
         c.add(icon(R.drawable.ic_bulb, if (St.light[i]) AMBER else OFFI), px(26), px(26))
         return c
     }
@@ -406,9 +410,9 @@ class MainActivity : Activity() {
         gear.isClickable = true
         gear.setOnClickListener { show("settings") }
         f.addView(gear, flp(Gravity.END or Gravity.BOTTOM, 20))
-        if (TEMPS[St.selected].isNotEmpty()) {
+        if (tempOf(St.selected).isNotEmpty()) {
             val t = pillBox()
-            t.addView(txt("Сейчас " + TEMPS[St.selected], 20, SOFT))
+            t.addView(txt("Сейчас " + tempOf(St.selected), 20, SOFT))
             f.addView(t, flp(Gravity.START or Gravity.BOTTOM, 20))
         }
         return f
@@ -429,12 +433,12 @@ class MainActivity : Activity() {
         c.gravity = Gravity.CENTER_VERTICAL
         c.setPadding(px(24), 0, px(24), 0)
         val l = lin(true)
-        l.add(txt("Отопление, уставка", 18, MUTED))
-        l.add(txt(St.setpoint.toString() + " °C", 56, TEXT, true), mt = 4)
+        l.add(txt("Отопление дома, уставка", 18, MUTED))
+        l.add(txt(St.houseSet.toString() + " °C", 56, TEXT, true), mt = 4)
         c.add(l, 0, WRAP, 1f)
         val st = lin(true)
-        st.add(stepBtn(R.drawable.ic_up) { St.setpoint = minOf(35, St.setpoint + 1); show("main") }, px(56), px(56), mb = 8)
-        st.add(stepBtn(R.drawable.ic_down) { St.setpoint = maxOf(5, St.setpoint - 1); show("main") }, px(56), px(56))
+        st.add(stepBtn(R.drawable.ic_up) { changeSet(1) }, px(56), px(56), mb = 8)
+        st.add(stepBtn(R.drawable.ic_down) { changeSet(-1) }, px(56), px(56))
         c.add(st)
         return c
     }
@@ -454,7 +458,7 @@ class MainActivity : Activity() {
         val pg = page()
         pg.add(header("Дом", R.drawable.ic_house), MATCH, px(64), mb = 16)
         val main = lin(false)
-        main.add(gaugeCard("+21,4 °C", 0.535f), px(120), MATCH, mr = 16)
+        main.add(gaugeCard("+" + St.houseTemp + " °C", (St.houseTempV / 40.0).toFloat().coerceIn(0f, 1f)), px(120), MATCH, mr = 16)
         main.add(breakerCard(), px(340), MATCH, mr = 16)
         val tiles = lin(true)
         val r1 = lin(false)
@@ -520,15 +524,15 @@ class MainActivity : Activity() {
     private fun tileHeat(): View {
         val body = lin(true)
         val row = lin(false, Gravity.CENTER_VERTICAL)
-        row.add(stepBtn(R.drawable.ic_down) { St.houseSet = maxOf(5, St.houseSet - 1); show("house") }, px(56), px(56))
+        row.add(stepBtn(R.drawable.ic_down) { changeSet(-1) }, px(56), px(56))
         val mid = lin(true, Gravity.CENTER)
         mid.add(txt(St.houseSet.toString() + " °C", 44, TEXT, true))
-        mid.add(txt("сейчас 21,4 °C", 16, TEAL))
+        mid.add(txt("сейчас " + St.houseTemp + " °C", 16, TEAL))
         row.add(mid, 0, WRAP, 1f)
-        row.add(stepBtn(R.drawable.ic_up) { St.houseSet = minOf(35, St.houseSet + 1); show("house") }, px(56), px(56))
+        row.add(stepBtn(R.drawable.ic_up) { changeSet(1) }, px(56), px(56))
         body.add(row, MATCH, 0, 1f)
         val s = sty(St.houseHeat, TEAL)
-        val b = card(s.fill, s.stroke, s.sw, 16, true) { St.houseHeat = !St.houseHeat; show("house") }
+        val b = card(s.fill, s.stroke, s.sw, 16, true) { toggleHeat() }
         b.add(txt(if (St.houseHeat) "Включена" else "Отключена", 22, s.fg, true))
         body.add(b, MATCH, px(52), mt = 10)
         return tile(R.drawable.ic_radiator, "Система отопления", "ZONT · Baxi", body)
@@ -667,17 +671,35 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun zontReady(): Boolean = Store.get("zont_login").isNotEmpty() && Store.get("zont_dev").isNotEmpty()
+
+    private fun tempOf(i: Int): String = if (i == 0) St.houseTemp + " °C" else TEMPS[i]
+
     private fun refresh() {
         if (refreshing) return
         if (System.currentTimeMillis() - lastRefresh < 3000L) return
         val bound = SLOTS.filter { Store.get("bind_" + it.id).isNotEmpty() }
-        if (bound.isEmpty()) return
+        val zOn = zontReady()
+        if (bound.isEmpty() && !zOn) return
         refreshing = true
         lastRefresh = System.currentTimeMillis()
         Net.bg {
             val binds = HashMap<String, String>()
             for (sl in bound) binds[sl.id] = Store.get("bind_" + sl.id)
-            val res = Drivers.states(binds)
+            val res: Map<String, Boolean> = if (binds.isEmpty()) HashMap() else Drivers.states(binds)
+            var z: ZontInfo? = null
+            if (zOn) {
+                try {
+                    val want = Store.get("zont_dev")
+                    val arr = Drivers.zont().devices()
+                    for (i in 0 until arr.length()) {
+                        val d = arr.getJSONObject(i)
+                        if (d.optLong("device_id").toString() == want) z = ZontInfo.from(d)
+                    }
+                } catch (e: Exception) {
+                }
+            }
+            val zi = z
             Net.ui {
                 refreshing = false
                 var changed = false
@@ -688,12 +710,96 @@ class MainActivity : Activity() {
                         changed = true
                     }
                 }
+                if (zi != null && zi.mode.isNotEmpty()) {
+                    val on = zi.mode != "idle"
+                    if (on != St.houseHeat) {
+                        St.houseHeat = on
+                        changed = true
+                    }
+                    if (!zi.comfort.isNaN()) {
+                        val c = Math.round(zi.comfort).toInt()
+                        if (c != St.houseSet) {
+                            St.houseSet = c
+                            changed = true
+                        }
+                    }
+                    val cur = zi.current
+                    if (cur != null) {
+                        val t = fmt1(cur)
+                        if (t != St.houseTemp) {
+                            St.houseTemp = t
+                            St.houseTempV = cur
+                            changed = true
+                        }
+                    }
+                }
                 if (changed && screen != "settings" && screen != "bind") show(screen, false)
             }
         }
     }
 
-    private fun field(label: String, key: String): LinearLayout {
+    private fun toggleHeat() {
+        val want = !St.houseHeat
+        if (!zontReady()) {
+            St.houseHeat = want
+            show(screen, false)
+            return
+        }
+        Net.bg {
+            val err: String? = try {
+                Drivers.zont().update(Store.get("zont_dev").toLong(), JSONObject().put("thermostat_mode", if (want) "comfort" else "idle"))
+                null
+            } catch (e: Exception) {
+                e.message ?: e.toString()
+            }
+            Net.ui {
+                if (err == null) St.houseHeat = want else toast("ZONT: " + err)
+                show(screen, false)
+            }
+        }
+    }
+
+    private fun changeSet(d: Int) {
+        val v = minOf(35, maxOf(5, St.houseSet + d))
+        St.houseSet = v
+        show(screen, false)
+        if (!zontReady()) return
+        val heatOn = St.houseHeat
+        Net.bg {
+            val err: String? = try {
+                val p = JSONObject()
+                p.put("thermostat_mode_temps", JSONObject().put("comfort", v))
+                if (heatOn) p.put("thermostat_mode", "comfort")
+                Drivers.zont().update(Store.get("zont_dev").toLong(), p)
+                null
+            } catch (e: Exception) {
+                e.message ?: e.toString()
+            }
+            if (err != null) Net.ui { toast("ZONT: " + err) }
+        }
+    }
+
+    private fun runZontCheck(out: TextView) {
+        out.text = "Подключаюсь…"
+        Net.bg {
+            val msg: String = try {
+                val arr = Drivers.zont().devices()
+                val sb = StringBuilder("Устройств ZONT: " + arr.length() + "\n")
+                for (i in 0 until arr.length()) {
+                    val z = ZontInfo.from(arr.getJSONObject(i))
+                    if (i == 0) Store.put("zont_dev", z.id.toString())
+                    sb.append(z.describe()).append("\n")
+                }
+                sb.toString()
+            } catch (e: Exception) {
+                "Ошибка: " + (e.message ?: e.toString())
+            }
+            Store.put("zont_log", msg)
+            Net.ui { out.text = msg }
+        }
+    }
+
+    private fun field(label: String, key: String, secret: Boolean = false): LinearLayout {
         val r = lin(false, Gravity.CENTER_VERTICAL)
         r.add(txt(label, 20, MUTED), px(220), WRAP)
         val e = EditText(this)
@@ -701,6 +807,7 @@ class MainActivity : Activity() {
         e.setTextSize(TypedValue.COMPLEX_UNIT_PX, 20 * u)
         e.setTextColor(TEXT)
         e.setSingleLine(true)
+        if (secret) e.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         e.background = bg(CHIP, LINE, 1, 12)
         e.setPadding(px(14), px(10), px(14), px(10))
         e.addTextChangedListener(object : TextWatcher {
@@ -762,7 +869,7 @@ class MainActivity : Activity() {
         val col = lin(true)
         col.add(txt("Smart Life (Tuya, облако)", 24, TEXT, true), mb = 10)
         col.add(field("Access ID", "tuya_id"), MATCH, WRAP, mb = 10)
-        col.add(field("Access Secret", "tuya_secret"), MATCH, WRAP, mb = 10)
+        col.add(field("Access Secret", "tuya_secret", true), MATCH, WRAP, mb = 10)
         col.add(field("UID аккаунта", "tuya_uid"), MATCH, WRAP, mb = 10)
         val dc = card(CHIP, LINE, 1, 12, false) { pickEndpoint() }
         dc.add(txt("Дата-центр: " + epLabel() + " (нажмите, чтобы изменить)", 20, TEXT))
@@ -772,6 +879,15 @@ class MainActivity : Activity() {
         check.add(txt("Проверить и загрузить устройства", 20, AMBER, true))
         col.add(check, MATCH, px(52), mb = 10)
         col.add(out, MATCH, WRAP, mb = 20)
+        col.add(txt("ZONT (котёл)", 24, TEXT, true), mt = 10, mb = 10)
+        col.add(field("Логин ZONT", "zont_login"), MATCH, WRAP, mb = 10)
+        col.add(field("Пароль ZONT", "zont_pass", true), MATCH, WRAP, mb = 10)
+        col.add(field("E-mail для API", "zont_mail"), MATCH, WRAP, mb = 10)
+        val zout = txt(Store.get("zont_log").ifEmpty { "Нажмите «Проверить ZONT»" }, 17, MUTED)
+        val zcheck = card(AMBER_BG, AMBER, 2, 12, false) { runZontCheck(zout) }
+        zcheck.add(txt("Проверить ZONT", 20, AMBER, true))
+        col.add(zcheck, MATCH, px(52), mb = 10)
+        col.add(zout, MATCH, WRAP, mb = 20)
         val bind = card(PANEL, LINE, 1, 12, false) { show("bind") }
         bind.add(txt("Привязка кнопок к устройствам", 20, TEXT, true))
         col.add(bind, MATCH, px(52), mb = 10)
