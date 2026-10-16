@@ -20,6 +20,7 @@ import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.SurfaceView
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebView
@@ -34,6 +35,11 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import org.json.JSONObject
 
 private val BG = 0xFF12171D.toInt()
@@ -118,6 +124,20 @@ private val SLOTS = listOf(
     Slot("flood", "Двор: прожекторы", { St.yFlood }, { St.yFlood = it })
 )
 
+private class Cam(val id: String, val def: String, val group: String)
+
+private val CAMS = listOf(
+    Cam("hall", "Зал", "house"),
+    Cam("boiler", "Котельная", "house"),
+    Cam("shop", "Мастерская", "shop"),
+    Cam("y1", "Двор 1", "yard"),
+    Cam("y2", "Двор 2", "yard"),
+    Cam("y3", "Двор 3", "yard"),
+    Cam("y4", "Двор 4", "yard"),
+    Cam("y5", "Двор 5", "yard"),
+    Cam("y6", "Двор 6", "yard")
+)
+
 private val EPS = listOf(
     "Центральная Европа" to "https://openapi.tuyaeu.com",
     "Западная Европа" to "https://openapi-weaz.tuyaeu.com",
@@ -165,7 +185,19 @@ class MainActivity : Activity() {
     }
 
     override fun onBackPressed() {
-        if (screen == "main") super.onBackPressed() else show("main")
+        if (screen == "main") super.onBackPressed()
+        else if (screen == "camera") show(camBack, false)
+        else show("main")
+    }
+
+    override fun onStop() {
+        super.onStop()
+        stopPlayer()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (screen == "camera") show("camera", false)
     }
 
     // экран не гаснет, пока приложение открыто (по умолчанию включено)
@@ -220,6 +252,7 @@ class MainActivity : Activity() {
 
     private fun show(name: String, fetch: Boolean = true) {
         saveState()
+        if (name != "camera") stopPlayer()
         screen = name
         root.removeAllViews()
         val v: View = when (name) {
@@ -229,10 +262,11 @@ class MainActivity : Activity() {
             "settings" -> buildSettings()
             "bind" -> buildBind()
             "ewl_login" -> buildEwlLogin()
+            "camera" -> buildCamera()
             else -> if (portrait) buildMainP() else buildMain()
         }
         root.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
-        if (fetch && name != "settings" && name != "bind" && name != "ewl_login") refresh()
+        if (fetch && name != "settings" && name != "bind" && name != "ewl_login" && name != "camera") refresh()
     }
 
     // ---------- помощники ----------
@@ -498,7 +532,7 @@ class MainActivity : Activity() {
         cam.add(icon(R.drawable.ic_camera, TEAL), px(26), px(26), mr = 10)
         cam.add(txt("Камера", 20, TEXT))
         cam.isClickable = true
-        cam.setOnClickListener { toast("Камера: видео подключим позже") }
+        cam.setOnClickListener { openCamFor(St.selected) }
         f.addView(cam, flp(Gravity.END or Gravity.TOP, 20))
         val gear = pillBox()
         gear.add(icon(R.drawable.ic_gear, TEAL), px(26), px(26), mr = 10)
@@ -639,7 +673,7 @@ class MainActivity : Activity() {
         c.background = bg(CHIP, LINE, 1, 16)
         c.setPadding(px(20), 0, px(20), 0)
         c.isClickable = true
-        c.setOnClickListener { toast("Камера «" + name + "»: видео подключим позже") }
+        c.setOnClickListener { openCam(if (name == "Зал") "hall" else "boiler") }
         c.add(icon(R.drawable.ic_camera, TEAL), px(30), px(30), mr = 14)
         c.add(txt(name, 24, TEXT, true))
         return c
@@ -666,7 +700,7 @@ class MainActivity : Activity() {
         act.add(tog(R.drawable.ic_radiator, "Отопление", if (St.shopHeat) "включено" else "выключено", St.shopHeat, TEAL) {
             flip("shop_heat")
         }, MATCH, 0, 1f, mb = 16)
-        act.add(tog(R.drawable.ic_camera, "Камера", "смотреть", false, AMBER) { toast("Камера: видео подключим позже") }, MATCH, 0, 1f)
+        act.add(tog(R.drawable.ic_camera, "Камера", "смотреть", false, AMBER) { openCam("shop") }, MATCH, 0, 1f)
         main.add(act, px(220), MATCH, mr = 16)
         val lt = lin(true)
         lt.add(lightRow(R.drawable.ic_bulb, "Освещение фасада", St.facade) { flip("facade") }, MATCH, px(170), mb = 16)
@@ -725,7 +759,7 @@ class MainActivity : Activity() {
         pg.add(main, MATCH, 0, 1f, mb = 16)
         val bot = lin(false)
         bot.add(backBtn(), px(340), MATCH, mr = 16)
-        val cam = card(PANEL, LINE, 1, 22, false) { toast("Камеры двора: видео подключим позже") }
+        val cam = card(PANEL, LINE, 1, 22, false) { openCamGroup("yard") }
         cam.add(icon(R.drawable.ic_camera, TEAL), px(36), px(36), mr = 14)
         cam.add(txt("Камеры двора", 24, TEXT, true))
         bot.add(cam, 0, MATCH, 1f)
@@ -775,6 +809,140 @@ class MainActivity : Activity() {
         for (id in listOf("park", "paths", "flood")) {
             if (slotOf(id).get() != v) flip(id)
         }
+    }
+
+    // ---------- камеры (Dahua, RTSP) ----------
+    private var player: ExoPlayer? = null
+    private var camList: List<Cam> = ArrayList()
+    private var camIdx = 0
+    private var camBack = "main"
+    private var camMain = false
+
+    private fun configured(group: String): List<Cam> =
+        CAMS.filter { it.group == group && Store.get("cam_ip_" + it.id).isNotEmpty() }
+
+    private fun openCam(id: String) {
+        val c = CAMS.first { it.id == id }
+        val list = configured(c.group)
+        val idx = list.indexOfFirst { it.id == id }
+        if (idx < 0) {
+            toast("Камера «" + c.def + "» не настроена: укажите IP в «Подключениях»")
+            return
+        }
+        camList = list
+        camIdx = idx
+        camBack = screen
+        show("camera", false)
+    }
+
+    private fun openCamGroup(group: String) {
+        val list = configured(group)
+        if (list.isEmpty()) {
+            toast("Камеры не настроены: укажите IP в «Подключениях»")
+            return
+        }
+        camList = list
+        camIdx = 0
+        camBack = screen
+        show("camera", false)
+    }
+
+    private fun openCamFor(i: Int) {
+        when (i) {
+            0 -> openCamGroup("house")
+            1 -> openCam("shop")
+            4 -> openCamGroup("yard")
+            else -> toast("Для этого объекта камеры нет")
+        }
+    }
+
+    private fun camUrl(c: Cam, main: Boolean): String {
+        val ip = Store.get("cam_ip_" + c.id)
+        val user = Store.get("cam_user").ifEmpty { "admin" }
+        val pass = Store.get("cam_pass")
+        val auth = if (pass.isEmpty()) Uri.encode(user) else Uri.encode(user) + ":" + Uri.encode(pass)
+        return "rtsp://" + auth + "@" + ip + ":554/cam/realmonitor?channel=1&subtype=" + (if (main) "0" else "1")
+    }
+
+    private fun stopPlayer() {
+        val p = player
+        player = null
+        if (p != null) {
+            try {
+                p.release()
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    private fun startPlayer(sv: SurfaceView, status: TextView, url: String) {
+        stopPlayer()
+        val pass = Store.get("cam_pass")
+        val p = ExoPlayer.Builder(this).build()
+        p.setVideoSurfaceView(sv)
+        p.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    status.visibility = View.GONE
+                } else if (playbackState == Player.STATE_BUFFERING) {
+                    status.text = "Подключаюсь…"
+                    status.visibility = View.VISIBLE
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                var msg = error.errorCodeName + ": " + (error.message ?: "")
+                if (pass.isNotEmpty()) msg = msg.replace(pass, "***")
+                status.text = "Нет изображения.\n" + msg + "\nПроверьте IP, пароль и что планшет в одной сети с камерой."
+                status.visibility = View.VISIBLE
+            }
+        })
+        val src = RtspMediaSource.Factory().setForceUseRtpTcp(true).createMediaSource(MediaItem.fromUri(url))
+        p.setMediaSource(src)
+        p.prepare()
+        p.playWhenReady = true
+        player = p
+    }
+
+    private fun buildCamera(): View {
+        if (camList.isEmpty()) return buildMain()
+        if (camIdx >= camList.size) camIdx = 0
+        val c = camList[camIdx]
+        val pg = page()
+        pg.add(header(c.def, R.drawable.ic_camera), MATCH, px(56), mb = 12)
+        val fr = FrameLayout(this)
+        fr.setBackgroundColor(0xFF000000.toInt())
+        val sv = SurfaceView(this)
+        fr.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
+        val st = txt("Подключаюсь…", 18, TEXT, false, true)
+        val lp = FrameLayout.LayoutParams(MATCH, WRAP, Gravity.CENTER)
+        lp.setMargins(px(20), px(20), px(20), px(20))
+        fr.addView(st, lp)
+        pg.add(fr, MATCH, 0, 1f, mb = 12)
+        val bar = lin(false)
+        val back = card(PANEL, LINE, 1, 22, false) { show(camBack, false) }
+        back.add(icon(R.drawable.ic_back, TEAL), px(26), px(26), mr = 10)
+        back.add(txt("Назад", 22, TEXT, true))
+        bar.add(back, 0, MATCH, 1.4f, mr = 10)
+        if (camList.size > 1) {
+            val prev = card(PANEL, LINE, 1, 22, true) { camIdx = (camIdx + camList.size - 1) % camList.size; show("camera", false) }
+            prev.add(icon(R.drawable.ic_back, TEAL), px(26), px(26))
+            bar.add(prev, 0, MATCH, 1f, mr = 10)
+            val next = card(PANEL, LINE, 1, 22, true) { camIdx = (camIdx + 1) % camList.size; show("camera", false) }
+            val ni = icon(R.drawable.ic_back, TEAL)
+            ni.rotation = 180f
+            next.add(ni, px(26), px(26))
+            bar.add(next, 0, MATCH, 1f, mr = 10)
+        }
+        val q = card(if (camMain) AMBER_BG else PANEL, if (camMain) AMBER else LINE, if (camMain) 2 else 1, 22, true) {
+            camMain = !camMain
+            show("camera", false)
+        }
+        q.add(txt(if (camMain) "HD" else "SD", 22, if (camMain) AMBER else TEXT, true))
+        bar.add(q, 0, MATCH, 1f)
+        pg.add(bar, MATCH, px(64))
+        startPlayer(sv, st, camUrl(c, camMain))
+        return pg
     }
 
     private fun zontReady(): Boolean = Store.get("zont_login").isNotEmpty() && Store.get("zont_dev").isNotEmpty()
@@ -966,7 +1134,7 @@ class MainActivity : Activity() {
                     St.shopRelay = tr
                     changed = true
                 }
-                if (changed && screen != "settings" && screen != "bind" && screen != "ewl_login") show(screen, false)
+                if (changed && screen != "settings" && screen != "bind" && screen != "ewl_login" && screen != "camera") show(screen, false)
             }
         }
     }
@@ -1155,6 +1323,11 @@ class MainActivity : Activity() {
         zcheck.add(txt("Проверить ZONT", 20, AMBER, true))
         col.add(zcheck, MATCH, px(52), mb = 10)
         col.add(zout, MATCH, WRAP, mb = 20)
+        col.add(txt("Камеры (Dahua, RTSP)", 24, TEXT, true), mt = 10, mb = 10)
+        col.add(field("Логин камер", "cam_user"), MATCH, WRAP, mb = 10)
+        col.add(field("Пароль камер", "cam_pass", true), MATCH, WRAP, mb = 10)
+        col.add(txt("IP-адреса камер в вашей сети; пустое поле — камеры нет", 17, MUTED), mb = 10)
+        for (cm in CAMS) col.add(field(cm.def, "cam_ip_" + cm.id), MATCH, WRAP, mb = 10)
         val bind = card(PANEL, LINE, 1, 12, false) { show("bind") }
         bind.add(txt("Привязка кнопок к устройствам", 20, TEXT, true))
         col.add(bind, MATCH, px(52), mb = 10)
@@ -1406,7 +1579,7 @@ class MainActivity : Activity() {
             f.addView(c, FrameLayout.LayoutParams(MATCH, MATCH))
         }
         f.addView(pillP(null, NAMES[St.selected], TEXT, null), flp(Gravity.START or Gravity.TOP, 12))
-        f.addView(pillP(R.drawable.ic_camera, "Камера", TEXT) { toast("Камера: видео подключим позже") }, flp(Gravity.END or Gravity.TOP, 12))
+        f.addView(pillP(R.drawable.ic_camera, "Камера", TEXT) { openCamFor(St.selected) }, flp(Gravity.END or Gravity.TOP, 12))
         val t = tempOf(St.selected)
         if (t.isNotEmpty()) f.addView(pillP(null, "Сейчас " + t, SOFT, null), flp(Gravity.START or Gravity.BOTTOM, 12))
         f.addView(pillP(R.drawable.ic_gear, "Подключения", TEXT) { show("settings") }, flp(Gravity.END or Gravity.BOTTOM, 12))
@@ -1512,7 +1685,7 @@ class MainActivity : Activity() {
         val act = lin(false)
         act.add(tog(R.drawable.ic_bulb, "Свет", if (St.shopLight) "включён" else "выключен", St.shopLight, AMBER) { flip("shop_light") }, 0, MATCH, 1f, mr = 10)
         act.add(tog(R.drawable.ic_radiator, "Отопление", if (St.shopHeat) "включено" else "выключено", St.shopHeat, TEAL) { flip("shop_heat") }, 0, MATCH, 1f, mr = 10)
-        act.add(tog(R.drawable.ic_camera, "Камера", "смотреть", false, AMBER) { toast("Камера: видео подключим позже") }, 0, MATCH, 1f)
+        act.add(tog(R.drawable.ic_camera, "Камера", "смотреть", false, AMBER) { openCam("shop") }, 0, MATCH, 1f)
         body.add(act, MATCH, px(150), mb = 12)
         body.add(lightRow(R.drawable.ic_bulb, "Освещение фасада", St.facade) { flip("facade") }, MATCH, px(120), mb = 12)
         body.add(lightRow(R.drawable.ic_awning, "Освещение навеса", St.awning) { flip("awning") }, MATCH, px(120), mb = 12)
@@ -1532,7 +1705,7 @@ class MainActivity : Activity() {
         body.add(rowCard(R.drawable.ic_route, "Дорожки", if (St.yPaths) "включено" else "выключено", St.yPaths) { flip("paths") }, MATCH, px(80), mb = 10)
         body.add(rowCard(R.drawable.ic_flood, "Прожекторы", if (St.yFlood) "включено" else "выключено", St.yFlood) { flip("flood") }, MATCH, px(80), mb = 10)
         body.add(rowCard(R.drawable.ic_bulb, "Весь двор", if (all) "выключить всё" else "включить всё", all) { yardAll(!all) }, MATCH, px(80))
-        val cam = card(PANEL, LINE, 1, 22, false) { toast("Камеры двора: видео подключим позже") }
+        val cam = card(PANEL, LINE, 1, 22, false) { openCamGroup("yard") }
         cam.add(icon(R.drawable.ic_camera, TEAL), px(30), px(30), mr = 10)
         cam.add(txt("Камеры", 22, TEXT, true))
         return scrollPage("Двор", R.drawable.ic_tree, body, bottomBar(cam))
