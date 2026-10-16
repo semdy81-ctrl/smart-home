@@ -7,6 +7,7 @@ import android.os.Looper
 import android.util.Base64
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
@@ -297,10 +298,23 @@ object Drivers {
     private var tuya: Tuya? = null
 
     private var zont: Zont? = null
+    private var ewl: Ewelink? = null
 
     fun reset() {
         tuya = null
         zont = null
+        ewl = null
+    }
+
+    fun ewl(): Ewelink {
+        val cur = ewl
+        if (cur != null) return cur
+        val id = Store.get("ewl_appid")
+        val sec = Store.get("ewl_secret")
+        if (id.isEmpty() || sec.isEmpty()) throw Exception("Заполните APPID и APP SECRET eWeLink")
+        val e = Ewelink(id, sec)
+        ewl = e
+        return e
     }
 
     fun zont(): Zont {
@@ -342,6 +356,10 @@ object Drivers {
                 } else {
                     tuya().setBool(p[1], p[2], on)
                 }
+            } else if (p[0] == "ewl") {
+                ewl().setSwitch(p[1], on)
+            } else if (p[0] == "ewlp") {
+                ewl().setSwitch(p[1], true)
             } else {
                 throw Exception("Неизвестный тип привязки")
             }
@@ -369,6 +387,24 @@ object Drivers {
                     out[slot] = v
                 } else if (v is String && p.size >= 6) {
                     out[slot] = (v == p[4])
+                }
+            } catch (e: Exception) {
+            }
+        }
+        val ewlIds = ArrayList<String>()
+        for ((_, b) in binds) {
+            val p = b.split("|")
+            if (p[0] == "ewl") ewlIds.add(p[1])
+        }
+        if (ewlIds.isNotEmpty()) {
+            try {
+                val m = ewl().states(ewlIds)
+                for ((slot, b) in binds) {
+                    val p = b.split("|")
+                    if (p[0] == "ewl") {
+                        val v = m[p[1]]
+                        if (v != null) out[slot] = v
+                    }
                 }
             } catch (e: Exception) {
             }
@@ -474,5 +510,135 @@ class ZontInfo(val id: Long, val name: String, val mode: String, val comfort: Do
         sb.append(if (boilerOn) ", котёл работает" else ", котёл не работает")
         if (fail) sb.append(", АВАРИЯ котла")
         return sb.toString()
+    }
+}
+
+const val EWL_REDIRECT = "https://127.0.0.1/smarthome"
+
+// eWeLink: вход OAuth2.0 (APPID и APP SECRET из dev.ewelink.cc), облачное API v2
+class Ewelink(private val appId: String, private val appSecret: String) {
+    private fun hmacB64(msg: String): String {
+        val m = Mac.getInstance("HmacSHA256")
+        m.init(SecretKeySpec(appSecret.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        return Base64.encodeToString(m.doFinal(msg.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
+    }
+
+    private fun nonce(): String {
+        val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+        val r = java.util.Random()
+        val sb = StringBuilder()
+        for (i in 0 until 8) sb.append(chars[r.nextInt(chars.length)])
+        return sb.toString()
+    }
+
+    private fun enc(v: String): String = URLEncoder.encode(v, "UTF-8")
+
+    fun authUrl(state: String): String {
+        val seq = System.currentTimeMillis().toString()
+        return "https://c2ccdn.coolkit.cc/oauth/index.html?clientId=" + enc(appId) +
+            "&seq=" + seq + "&authorization=" + enc(hmacB64(appId + "_" + seq)) +
+            "&redirectUrl=" + enc(EWL_REDIRECT) + "&grantType=authorization_code" +
+            "&state=" + enc(state) + "&nonce=" + nonce()
+    }
+
+    private fun base(): String {
+        val r = Store.get("ewl_region").ifEmpty { "eu" }
+        return if (r == "cn") "https://cn-apia.coolkit.cn" else "https://" + r + "-apia.coolkit.cc"
+    }
+
+    private fun parse(text: String): JSONObject {
+        try {
+            return JSONObject(text)
+        } catch (e: Exception) {
+            throw Exception("Неожиданный ответ eWeLink: " + text.take(200))
+        }
+    }
+
+    fun exchange(code: String, region: String) {
+        Store.put("ewl_region", region)
+        val body = JSONObject().put("code", code).put("redirectUrl", EWL_REDIRECT)
+            .put("grantType", "authorization_code").toString()
+        val h = HashMap<String, String>()
+        h["X-CK-Appid"] = appId
+        h["X-CK-Nonce"] = nonce()
+        h["Authorization"] = "Sign " + hmacB64(body)
+        h["Content-Type"] = "application/json"
+        val j = parse(Net.call("POST", base() + "/v2/user/oauth/token", h, body))
+        if (j.optInt("error", -1) != 0) throw Exception("Вход: " + j.optString("msg") + " (" + j.optInt("error") + ")")
+        val d = j.getJSONObject("data")
+        Store.put("ewl_at", d.optString("accessToken"))
+        Store.put("ewl_rt", d.optString("refreshToken"))
+    }
+
+    private fun headers(): HashMap<String, String> {
+        val h = HashMap<String, String>()
+        h["Authorization"] = "Bearer " + Store.get("ewl_at")
+        h["X-CK-Appid"] = appId
+        h["X-CK-Nonce"] = nonce()
+        h["Content-Type"] = "application/json"
+        return h
+    }
+
+    private fun refreshToken() {
+        val rt = Store.get("ewl_rt")
+        if (rt.isEmpty()) throw Exception("Войдите в eWeLink на экране «Подключения»")
+        val body = JSONObject().put("rt", rt).toString()
+        val j = parse(Net.call("POST", base() + "/v2/user/refresh", headers(), body))
+        if (j.optInt("error", -1) != 0) throw Exception("Сессия eWeLink истекла, войдите заново (" + j.optString("msg") + ")")
+        val d = j.getJSONObject("data")
+        Store.put("ewl_at", d.optString("at", d.optString("accessToken")))
+        Store.put("ewl_rt", d.optString("rt", d.optString("refreshToken")))
+    }
+
+    private fun api(method: String, path: String, body: String): JSONObject {
+        if (Store.get("ewl_at").isEmpty()) throw Exception("Войдите в eWeLink на экране «Подключения»")
+        var j = parse(Net.call(method, base() + path, headers(), body))
+        val err = j.optInt("error", -1)
+        if (err == 401 || err == 402) {
+            refreshToken()
+            j = parse(Net.call(method, base() + path, headers(), body))
+        }
+        if (j.optInt("error", -1) != 0) throw Exception("eWeLink: " + j.optString("msg") + " (" + j.optInt("error") + ")")
+        return j
+    }
+
+    // список устройств; ключи устройств (devicekey) сохраняются для будущего локального режима
+    fun devices(): List<Dev> {
+        val j = api("GET", "/v2/device/thing?num=0", "")
+        val arr = j.optJSONObject("data")?.optJSONArray("thingList") ?: JSONArray()
+        val out = ArrayList<Dev>()
+        for (i in 0 until arr.length()) {
+            val t = arr.getJSONObject(i)
+            val type = t.optInt("itemType")
+            if (type != 1 && type != 2) continue
+            val d = t.optJSONObject("itemData") ?: continue
+            val id = d.optString("deviceid")
+            val key = d.optString("devicekey")
+            if (key.isNotEmpty()) Store.put("ewl_key_" + id, key)
+            var model = d.optString("productModel")
+            if (model.isEmpty()) model = d.optJSONObject("extra")?.optString("model") ?: ""
+            out.add(Dev(id, d.optString("name").replace("|", "/"), d.optBoolean("online"), listOf("switch"), model))
+        }
+        return out
+    }
+
+    fun states(ids: List<String>): Map<String, Boolean> {
+        val list = JSONArray()
+        for (id in ids) list.put(JSONObject().put("itemType", 1).put("id", id))
+        val j = api("POST", "/v2/device/thing", JSONObject().put("thingList", list).toString())
+        val arr = j.optJSONObject("data")?.optJSONArray("thingList") ?: JSONArray()
+        val m = HashMap<String, Boolean>()
+        for (i in 0 until arr.length()) {
+            val d = arr.getJSONObject(i).optJSONObject("itemData") ?: continue
+            val p = d.optJSONObject("params") ?: continue
+            if (p.has("switch")) m[d.optString("deviceid")] = p.optString("switch") == "on"
+        }
+        return m
+    }
+
+    fun setSwitch(id: String, on: Boolean) {
+        val body = JSONObject().put("type", 1).put("id", id)
+            .put("params", JSONObject().put("switch", if (on) "on" else "off")).toString()
+        api("POST", "/v2/device/thing/status", body)
     }
 }

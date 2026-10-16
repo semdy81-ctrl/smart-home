@@ -3,6 +3,7 @@ package ru.smarthome.home
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Paint
@@ -12,11 +13,14 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -147,10 +151,11 @@ class MainActivity : Activity() {
             "yard" -> buildYard()
             "settings" -> buildSettings()
             "bind" -> buildBind()
+            "ewl_login" -> buildEwlLogin()
             else -> buildMain()
         }
         root.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
-        if (fetch && name != "settings" && name != "bind") refresh()
+        if (fetch && name != "settings" && name != "bind" && name != "ewl_login") refresh()
     }
 
     // ---------- помощники ----------
@@ -423,7 +428,7 @@ class MainActivity : Activity() {
         c.add(chip(R.drawable.ic_gate, 68, 40, CHIP, SOFT), px(68), px(68), mr = 18)
         val t = lin(true)
         t.add(txt("Ворота", 32, TEXT, true))
-        t.add(txt(if (St.gate) "Открыты" else "Закрыты", 18, MUTED), mt = 4)
+        t.add(txt("Открыть / закрыть", 18, MUTED), mt = 4)
         c.add(t)
         return c
     }
@@ -644,6 +649,8 @@ class MainActivity : Activity() {
     // ---------- подключение устройств ----------
     private var refreshing = false
     private var lastRefresh = 0L
+    private var lastGate = 0L
+    private var ewlHandled = false
 
     private fun slotOf(id: String): Slot = SLOTS.first { it.id == id }
 
@@ -654,6 +661,19 @@ class MainActivity : Activity() {
         if (b.isEmpty()) {
             sl.set(want)
             show(screen, false)
+            return
+        }
+        if (b.startsWith("ewlp|")) {
+            val now = System.currentTimeMillis()
+            if (now - lastGate < 5000L) {
+                toast("Подождите несколько секунд перед повторной командой воротам")
+                return
+            }
+            lastGate = now
+            Net.bg {
+                val gerr = Drivers.set(b, true)
+                Net.ui { toast(if (gerr == null) "Ворота: команда отправлена" else "Ошибка: " + gerr) }
+            }
             return
         }
         Net.bg {
@@ -733,7 +753,7 @@ class MainActivity : Activity() {
                         }
                     }
                 }
-                if (changed && screen != "settings" && screen != "bind") show(screen, false)
+                if (changed && screen != "settings" && screen != "bind" && screen != "ewl_login") show(screen, false)
             }
         }
     }
@@ -887,6 +907,20 @@ class MainActivity : Activity() {
         check.add(txt("Проверить и загрузить устройства", 20, AMBER, true))
         col.add(check, MATCH, px(52), mb = 10)
         col.add(out, MATCH, WRAP, mb = 20)
+        col.add(txt("eWeLink (Sonoff)", 24, TEXT, true), mt = 10, mb = 10)
+        col.add(field("APPID", "ewl_appid"), MATCH, WRAP, mb = 10)
+        col.add(field("APP SECRET", "ewl_secret", true), MATCH, WRAP, mb = 10)
+        col.add(txt("Redirect URL в eWeLink Console: " + EWL_REDIRECT, 17, MUTED), mb = 10)
+        val eout = txt(Store.get("ewl_log").ifEmpty { if (Store.get("ewl_at").isEmpty()) "Вход не выполнен" else "Вход выполнен" }, 17, MUTED)
+        val erow = lin(false)
+        val elogin = card(AMBER_BG, AMBER, 2, 12, false) { startEwlLogin() }
+        elogin.add(txt("Войти в eWeLink", 20, AMBER, true))
+        erow.add(elogin, 0, px(52), 1f, mr = 10)
+        val eload = card(AMBER_BG, AMBER, 2, 12, false) { runEwlLoad(eout) }
+        eload.add(txt("Загрузить устройства", 20, AMBER, true))
+        erow.add(eload, 0, px(52), 1f)
+        col.add(erow, MATCH, WRAP, mb = 10)
+        col.add(eout, MATCH, WRAP, mb = 20)
         col.add(txt("ZONT (котёл)", 24, TEXT, true), mt = 10, mb = 10)
         col.add(field("Логин ZONT", "zont_login"), MATCH, WRAP, mb = 10)
         col.add(field("Пароль ZONT", "zont_pass", true), MATCH, WRAP, mb = 10)
@@ -916,10 +950,13 @@ class MainActivity : Activity() {
             (if (parts.size == 3) "|" + parts[1] + "|" + parts[2] else "")
     }
 
-    // автопривязка известных устройств Smart Life; уже заданные привязки не трогает
+    private fun norm(v: String): String = v.lowercase().replace('ё', 'е').trim()
+
+    // автопривязка известных устройств Smart Life и eWeLink; уже заданные привязки не трогает
     private fun autoBind() {
         val devs = Dev.fromJson(Store.get("tuya_devs"))
-        if (devs.isEmpty()) {
+        val edevs = Dev.fromJson(Store.get("ewl_devs"))
+        if (devs.isEmpty() && edevs.isEmpty()) {
             toast("Сначала загрузите устройства на экране «Подключения»")
             return
         }
@@ -937,8 +974,114 @@ class MainActivity : Activity() {
             Store.put("bind_" + slot, refFor(d, code))
             n++
         }
+        val erules = listOf(
+            "gate" to listOf("дача"),
+            "bonfire" to listOf("костров"),
+            "floor" to listOf("теплый пол ванн"),
+            "garland" to listOf("гирлянд"),
+            "spot_garden" to listOf("прожектор огород"),
+            "facade" to listOf("свет. мастерская", "фасад"),
+            "awning" to listOf("навес"),
+            "paths" to listOf("освещение двор", "освещение улица"),
+            "flood" to listOf("прожектор ворота")
+        )
+        for ((slot, parts) in erules) {
+            if (Store.get("bind_" + slot).isNotEmpty()) continue
+            val d = edevs.firstOrNull { dv -> parts.any { p -> norm(dv.name).contains(p) } } ?: continue
+            Store.put("bind_" + slot, (if (slot == "gate") "ewlp" else "ewl") + "|" + d.id + "|switch|" + d.name)
+            n++
+        }
         toast("Привязано кнопок: " + n)
         show("bind", false)
+    }
+
+    // ---------- вход в eWeLink ----------
+    private fun startEwlLogin() {
+        if (Store.get("ewl_appid").isEmpty() || Store.get("ewl_secret").isEmpty()) {
+            toast("Сначала введите APPID и APP SECRET")
+            return
+        }
+        ewlHandled = false
+        show("ewl_login", false)
+    }
+
+    private fun buildEwlLogin(): View {
+        val pg = page()
+        pg.add(header("Вход в eWeLink", R.drawable.ic_gear), MATCH, px(64), mb = 12)
+        val url = try {
+            Drivers.ewl().authUrl("sh" + System.currentTimeMillis())
+        } catch (e: Exception) {
+            ""
+        }
+        val wv = WebView(this)
+        wv.settings.javaScriptEnabled = true
+        wv.settings.domStorageEnabled = true
+        wv.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean = catchRedirect(url)
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                if (catchRedirect(url)) view?.stopLoading() else super.onPageStarted(view, url, favicon)
+            }
+        }
+        pg.add(wv, MATCH, 0, 1f, mb = 12)
+        val back = card(PANEL, LINE, 1, 22, false) { show("settings", false) }
+        back.add(txt("Отмена", 24, TEXT, true))
+        pg.add(back, MATCH, px(72))
+        if (url.isNotEmpty()) wv.loadUrl(url)
+        return pg
+    }
+
+    private fun catchRedirect(url: String?): Boolean {
+        if (url == null || !url.startsWith(EWL_REDIRECT)) return false
+        if (ewlHandled) return true
+        ewlHandled = true
+        val uri = Uri.parse(url)
+        val code = uri.getQueryParameter("code") ?: ""
+        val region = uri.getQueryParameter("region") ?: "eu"
+        if (code.isEmpty()) {
+            Store.put("ewl_log", "Вход не выполнен: eWeLink не вернул код")
+            Net.ui { show("settings", false) }
+            return true
+        }
+        Store.put("ewl_log", "Вход выполнен, загружаю устройства…")
+        Net.ui { show("settings", false) }
+        Net.bg {
+            val msg: String = try {
+                Drivers.ewl().exchange(code, region)
+                ewlListText()
+            } catch (e: Exception) {
+                "Ошибка входа: " + (e.message ?: e.toString())
+            }
+            Store.put("ewl_log", msg)
+            Net.ui { if (screen == "settings") show("settings", false) }
+        }
+        return true
+    }
+
+    private fun ewlListText(): String {
+        val list = Drivers.ewl().devices()
+        Store.put("ewl_devs", Dev.toJson(list))
+        val sb = StringBuilder("Устройств eWeLink: " + list.size + "\n")
+        for (d in list) {
+            sb.append(d.name).append(if (d.online) " · в сети" else " · не в сети")
+            if (d.info.isNotEmpty()) sb.append(" · ").append(d.info)
+            sb.append(if (Store.get("ewl_key_" + d.id).isNotEmpty()) " · ключ есть" else " · нет ключа")
+            sb.append("\n")
+        }
+        return sb.toString()
+    }
+
+    private fun runEwlLoad(out: TextView) {
+        out.text = "Загружаю…"
+        Net.bg {
+            val msg: String = try {
+                ewlListText()
+            } catch (e: Exception) {
+                "Ошибка: " + (e.message ?: e.toString())
+            }
+            Store.put("ewl_log", msg)
+            Net.ui { out.text = msg }
+        }
     }
 
     private fun pickDevice(sl: Slot) {
@@ -958,6 +1101,10 @@ class MainActivity : Activity() {
                 refs.add(refFor(d, c))
             }
         }
+        for (d in Dev.fromJson(Store.get("ewl_devs"))) {
+            names.add("eWeLink · " + d.name)
+            refs.add((if (sl.id == "gate") "ewlp" else "ewl") + "|" + d.id + "|switch|" + d.name)
+        }
         AlertDialog.Builder(this)
             .setTitle(sl.label)
             .setItems(names.toTypedArray()) { _, i ->
@@ -973,7 +1120,7 @@ class MainActivity : Activity() {
         val sv = ScrollView(this)
         val col = lin(true)
         val auto = card(AMBER_BG, AMBER, 2, 12, false) { autoBind() }
-        auto.add(txt("Привязать автоматически (Smart Life)", 20, AMBER, true))
+        auto.add(txt("Привязать автоматически", 20, AMBER, true))
         col.add(auto, MATCH, px(56), mb = 12)
         for (sl in SLOTS) {
             val b = Store.get("bind_" + sl.id)
