@@ -3,6 +3,8 @@ package ru.smarthome.home
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.LinearGradient
@@ -130,12 +132,28 @@ class MainActivity : Activity() {
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         Store.init(this)
-        val dm = resources.displayMetrics
-        u = minOf(dm.widthPixels, dm.heightPixels) / 800f
+        // планшет — альбомная ориентация, телефон — книжная (поворот по желанию пользователя)
+        requestedOrientation = if (resources.configuration.smallestScreenWidthDp >= 600)
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+        updateScale()
         root = FrameLayout(this)
         root.setBackgroundColor(BG)
         setContentView(root)
         show("main")
+    }
+
+    private var portrait = false
+
+    private fun updateScale() {
+        val dm = resources.displayMetrics
+        portrait = dm.heightPixels > dm.widthPixels
+        u = if (portrait) dm.widthPixels / 412f else minOf(dm.widthPixels, dm.heightPixels) / 800f
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        updateScale()
+        if (screen != "ewl_login") show(screen, false)
     }
 
     override fun onBackPressed() {
@@ -146,13 +164,13 @@ class MainActivity : Activity() {
         screen = name
         root.removeAllViews()
         val v: View = when (name) {
-            "house" -> buildHouse()
-            "shop" -> buildShop()
-            "yard" -> buildYard()
+            "house" -> if (portrait) buildHouseP() else buildHouse()
+            "shop" -> if (portrait) buildShopP() else buildShop()
+            "yard" -> if (portrait) buildYardP() else buildYard()
             "settings" -> buildSettings()
             "bind" -> buildBind()
             "ewl_login" -> buildEwlLogin()
-            else -> buildMain()
+            else -> if (portrait) buildMainP() else buildMain()
         }
         root.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
         if (fetch && name != "settings" && name != "bind" && name != "ewl_login") refresh()
@@ -821,7 +839,7 @@ class MainActivity : Activity() {
 
     private fun field(label: String, key: String, secret: Boolean = false): LinearLayout {
         val r = lin(false, Gravity.CENTER_VERTICAL)
-        r.add(txt(label, 20, MUTED), px(220), WRAP)
+        r.add(txt(label, 20, MUTED), px(if (portrait) 130 else 220), WRAP)
         val e = EditText(this)
         e.setText(Store.get(key))
         e.setTextSize(TypedValue.COMPLEX_UNIT_PX, 20 * u)
@@ -1138,6 +1156,182 @@ class MainActivity : Activity() {
         back.add(txt("Назад", 24, TEXT, true))
         pg.add(back, MATCH, px(72))
         return pg
+    }
+    // ---------- книжная ориентация (телефон) ----------
+    private fun scrollPage(title: String, res: Int, body: LinearLayout, bar: LinearLayout): View {
+        val pg = lin(true)
+        pg.setPadding(px(16), px(16), px(16), px(16))
+        pg.add(header(title, res), MATCH, px(56), mb = 12)
+        val sv = ScrollView(this)
+        sv.addView(body, FrameLayout.LayoutParams(MATCH, WRAP))
+        pg.add(sv, MATCH, 0, 1f, mb = 12)
+        pg.add(bar, MATCH, px(64))
+        return pg
+    }
+
+    private fun bottomBar(right: View): LinearLayout {
+        val bar = lin(false)
+        bar.add(backBtn(), 0, MATCH, 1f, mr = 12)
+        bar.add(right, 0, MATCH, 1f)
+        return bar
+    }
+
+    private fun pillP(res: Int?, text: String, color: Int, click: (() -> Unit)?): LinearLayout {
+        val p = lin(false, Gravity.CENTER_VERTICAL)
+        p.background = bg(PILL, LINE, 1, 40)
+        p.setPadding(px(12), px(6), px(12), px(6))
+        if (res != null) p.add(icon(res, TEAL), px(18), px(18), mr = 6)
+        p.add(txt(text, 14, color, res == null && color == TEXT))
+        if (click != null) {
+            p.isClickable = true
+            p.setOnClickListener { click() }
+        }
+        return p
+    }
+
+    private fun photoP(): View {
+        val f = FrameLayout(this)
+        f.background = bg(PHOTO, LINE, 1, 18)
+        val c = lin(true, Gravity.CENTER)
+        c.add(txt("Фото объекта управления", 20, FAINT, true))
+        c.add(txt("место под ваше фото или кадр с камеры", 13, FAINT), mt = 6)
+        f.addView(c, FrameLayout.LayoutParams(MATCH, MATCH))
+        f.addView(pillP(null, NAMES[St.selected], TEXT, null), flp(Gravity.START or Gravity.TOP, 12))
+        f.addView(pillP(R.drawable.ic_camera, "Камера", TEXT) { toast("Камера: видео подключим позже") }, flp(Gravity.END or Gravity.TOP, 12))
+        val t = tempOf(St.selected)
+        if (t.isNotEmpty()) f.addView(pillP(null, "Сейчас " + t, SOFT, null), flp(Gravity.START or Gravity.BOTTOM, 12))
+        f.addView(pillP(R.drawable.ic_gear, "Подключения", TEXT) { show("settings") }, flp(Gravity.END or Gravity.BOTTOM, 12))
+        return f
+    }
+
+    private fun navTileP(i: Int): View {
+        val sel = i == St.selected
+        val c = lin(false, Gravity.CENTER_VERTICAL)
+        c.background = bg(if (sel) AMBER_BG else PANEL, if (sel) AMBER else LINE, if (sel) 2 else 1, 14)
+        c.setPadding(px(10), 0, px(10), 0)
+        c.isClickable = true
+        c.setOnClickListener { onNav(i) }
+        c.add(chip(NAV_ICONS[i], 34, 18, if (sel) AMBER_CHIP else CHIP, if (sel) AMBER else SOFT), px(34), px(34), mr = 8)
+        val tx = lin(true)
+        tx.add(txt(NAMES[i], 16, TEXT, true))
+        val t = tempOf(i)
+        if (t.isNotEmpty()) tx.add(txt(t, 13, SOFT), mt = 2)
+        c.add(tx, 0, WRAP, 1f)
+        c.add(icon(R.drawable.ic_bulb, if (St.light[i]) AMBER else OFFI), px(18), px(18))
+        return c
+    }
+
+    private fun gateCardP(): LinearLayout {
+        val c = card(PANEL, LINE, 1, 16, false) { flip("gate") }
+        c.gravity = Gravity.CENTER_VERTICAL
+        c.setPadding(px(16), 0, px(16), 0)
+        c.add(chip(R.drawable.ic_gate, 44, 26, CHIP, SOFT), px(44), px(44), mr = 14)
+        val t = lin(true)
+        t.add(txt("Ворота", 20, TEXT, true))
+        t.add(txt("Открыть / закрыть", 14, MUTED), mt = 2)
+        c.add(t)
+        return c
+    }
+
+    private fun setpointCardP(): LinearLayout {
+        val c = card(PANEL, LINE, 1, 16, false, null)
+        c.gravity = Gravity.CENTER_VERTICAL
+        c.setPadding(px(16), 0, px(16), 0)
+        val l = lin(true)
+        l.add(txt("Отопление дома, уставка", 14, MUTED))
+        l.add(txt(St.houseSet.toString() + " °C", 34, TEXT, true), mt = 2)
+        c.add(l, 0, WRAP, 1f)
+        c.add(stepBtn(R.drawable.ic_down) { changeSet(-1) }, px(48), px(48), mr = 10)
+        c.add(stepBtn(R.drawable.ic_up) { changeSet(1) }, px(48), px(48))
+        return c
+    }
+
+    private fun alarmP(l2: String, on: Boolean, click: () -> Unit): LinearLayout {
+        val s = sty(on, AMBER)
+        val c = card(s.fill, s.stroke, s.sw, 16, true, click)
+        c.add(icon(if (on) R.drawable.ic_shield_on else R.drawable.ic_shield, s.fg), px(30), px(30))
+        c.add(txt("Охрана " + l2, 17, TEXT, true, true), MATCH, WRAP, mt = 4, ml = 6, mr = 6)
+        c.add(txt(if (on) "включена" else "отключена", 14, s.fg), mt = 2)
+        return c
+    }
+
+    private fun buildMainP(): View {
+        val pg = lin(true)
+        pg.setPadding(px(16), px(16), px(16), px(16))
+        pg.add(photoP(), MATCH, px(250), mb = 12)
+        val r1 = lin(false)
+        r1.add(navTileP(0), 0, MATCH, 1f, mr = 10)
+        r1.add(navTileP(1), 0, MATCH, 1f)
+        val r2 = lin(false)
+        r2.add(navTileP(2), 0, MATCH, 1f, mr = 10)
+        r2.add(navTileP(3), 0, MATCH, 1f)
+        pg.add(r1, MATCH, px(66), mb = 10)
+        pg.add(r2, MATCH, px(66), mb = 10)
+        pg.add(navTileP(4), MATCH, px(66), mb = 12)
+        pg.add(gateCardP(), MATCH, px(64), mb = 10)
+        pg.add(setpointCardP(), MATCH, px(84), mb = 10)
+        val ar = lin(false)
+        ar.add(alarmP("дома", St.alarmHouse) { flip("alarm_house") }, 0, MATCH, 1f, mr = 10)
+        ar.add(alarmP("мастерской", St.alarmShop) { flip("alarm_shop") }, 0, MATCH, 1f)
+        pg.add(ar, MATCH, 0, 1f)
+        return pg
+    }
+
+    private fun buildHouseP(): View {
+        val body = lin(true)
+        val top = lin(false)
+        top.add(gaugeCard("+" + St.houseTemp + " °C", (St.houseTempV / 40.0).toFloat().coerceIn(0f, 1f)), px(100), MATCH, mr = 12)
+        top.add(breakerCard(), 0, MATCH, 1f)
+        body.add(top, MATCH, px(300), mb = 12)
+        body.add(tileFloor(), MATCH, px(230), mb = 12)
+        body.add(tileLight(), MATCH, px(250), mb = 12)
+        body.add(tileHeat(), MATCH, px(250), mb = 12)
+        body.add(tileCams(), MATCH, px(230), mb = 12)
+        val ind = lin(false)
+        ind.add(indicator(R.drawable.ic_flame, "Пожарный извещатель"), 0, MATCH, 1f, mr = 12)
+        ind.add(indicator(R.drawable.ic_gas, "Сигнализатор загазованности"), 0, MATCH, 1f)
+        body.add(ind, MATCH, px(100))
+        return scrollPage("Дом", R.drawable.ic_house, body, bottomBar(settingsBtn()))
+    }
+
+    private fun buildShopP(): View {
+        val body = lin(true)
+        val top = lin(false)
+        top.add(gaugeCard("+14,0 °C", 0.35f), px(100), MATCH, mr = 12)
+        val big = card(PANEL, LINE, 1, 22, true, null)
+        big.add(icon(R.drawable.ic_house_thin, OFFI), px(110), px(110))
+        big.add(txt("Мастерская", 34, TEXT, true), mt = 8)
+        big.add(txt("14,0 °C", 30, TEAL), mt = 6)
+        big.add(txt("температура в помещении", 15, MUTED), mt = 6)
+        top.add(big, 0, MATCH, 1f)
+        body.add(top, MATCH, px(280), mb = 12)
+        val act = lin(false)
+        act.add(tog(R.drawable.ic_bulb, "Свет", if (St.shopLight) "включён" else "выключен", St.shopLight, AMBER) { flip("shop_light") }, 0, MATCH, 1f, mr = 10)
+        act.add(tog(R.drawable.ic_radiator, "Отопление", if (St.shopHeat) "включено" else "выключено", St.shopHeat, TEAL) { flip("shop_heat") }, 0, MATCH, 1f, mr = 10)
+        act.add(tog(R.drawable.ic_camera, "Камера", "смотреть", false, AMBER) { toast("Камера: видео подключим позже") }, 0, MATCH, 1f)
+        body.add(act, MATCH, px(150), mb = 12)
+        body.add(lightRow(R.drawable.ic_bulb, "Освещение фасада", St.facade) { flip("facade") }, MATCH, px(120), mb = 12)
+        body.add(lightRow(R.drawable.ic_awning, "Освещение навеса", St.awning) { flip("awning") }, MATCH, px(120), mb = 12)
+        body.add(indicator(R.drawable.ic_flame, "Пожарная сигнализация"), MATCH, px(90))
+        return scrollPage("Мастерская", R.drawable.ic_shop, body, bottomBar(settingsBtn()))
+    }
+
+    private fun buildYardP(): View {
+        val body = lin(true)
+        val sc = FrameLayout(this)
+        val yv = YardView(this, St.yPark, St.yPaths, St.yFlood)
+        yv.background = bg(SCENE, LINE, 1, 18)
+        sc.addView(yv, FrameLayout.LayoutParams(MATCH, MATCH))
+        body.add(sc, MATCH, px(250), mb = 12)
+        val all = St.yPark && St.yPaths && St.yFlood
+        body.add(rowCard(R.drawable.ic_parking, "Парковка", if (St.yPark) "включено" else "выключено", St.yPark) { flip("park") }, MATCH, px(80), mb = 10)
+        body.add(rowCard(R.drawable.ic_route, "Дорожки", if (St.yPaths) "включено" else "выключено", St.yPaths) { flip("paths") }, MATCH, px(80), mb = 10)
+        body.add(rowCard(R.drawable.ic_flood, "Прожекторы", if (St.yFlood) "включено" else "выключено", St.yFlood) { flip("flood") }, MATCH, px(80), mb = 10)
+        body.add(rowCard(R.drawable.ic_bulb, "Весь двор", if (all) "выключить всё" else "включить всё", all) { yardAll(!all) }, MATCH, px(80))
+        val cam = card(PANEL, LINE, 1, 22, false) { toast("Камеры двора: видео подключим позже") }
+        cam.add(icon(R.drawable.ic_camera, TEAL), px(30), px(30), mr = 10)
+        cam.add(txt("Камеры", 22, TEXT, true))
+        return scrollPage("Двор", R.drawable.ic_tree, body, bottomBar(cam))
     }
 }
 

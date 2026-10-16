@@ -11,8 +11,8 @@ android {
         applicationId 'ru.smarthome.home'
         minSdk 22
         targetSdk 34
-        versionCode 8
-        versionName '0.8'
+        versionCode 9
+        versionName '0.9'
     }
     signingConfigs {
         debug {
