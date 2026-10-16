@@ -862,6 +862,14 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun appVersion(): String {
+        return try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
     private fun buildSettings(): View {
         val pg = page()
         pg.add(header("Подключения", R.drawable.ic_gear), MATCH, px(64), mb = 12)
@@ -891,6 +899,7 @@ class MainActivity : Activity() {
         val bind = card(PANEL, LINE, 1, 12, false) { show("bind") }
         bind.add(txt("Привязка кнопок к устройствам", 20, TEXT, true))
         col.add(bind, MATCH, px(52), mb = 10)
+        col.add(txt("Умный дом · версия " + appVersion(), 16, FAINT), mt = 6)
         sv.addView(col, FrameLayout.LayoutParams(MATCH, WRAP))
         pg.add(sv, MATCH, 0, 1f, mb = 12)
         val back = card(PANEL, LINE, 1, 22, false) { show("main") }
