@@ -63,7 +63,7 @@ object Store {
     }
 }
 
-class Dev(val id: String, val name: String, val online: Boolean, val codes: List<String>) {
+class Dev(val id: String, val name: String, val online: Boolean, val codes: List<String>, val info: String = "") {
     companion object {
         fun toJson(l: List<Dev>): String {
             val a = JSONArray()
@@ -73,6 +73,7 @@ class Dev(val id: String, val name: String, val online: Boolean, val codes: List
                 o.put("name", d.name)
                 o.put("online", d.online)
                 o.put("codes", JSONArray(d.codes))
+                o.put("info", d.info)
                 a.put(o)
             }
             return a.toString()
@@ -88,7 +89,7 @@ class Dev(val id: String, val name: String, val online: Boolean, val codes: List
                     val c = o.getJSONArray("codes")
                     val cl = ArrayList<String>()
                     for (k in 0 until c.length()) cl.add(c.getString(k))
-                    out.add(Dev(o.getString("id"), o.getString("name"), o.optBoolean("online"), cl))
+                    out.add(Dev(o.getString("id"), o.getString("name"), o.optBoolean("online"), cl, o.optString("info")))
                 }
             } catch (e: Exception) {
             }
@@ -162,41 +163,92 @@ class Tuya(private val base: String, private val clientId: String, private val s
         return j
     }
 
+    // управляемые коды устройства: логические и режимы охраны (arm / disarmed)
+    private fun functionCodes(id: String): List<String> {
+        val out = ArrayList<String>()
+        try {
+            val j = api("GET", "/v1.0/devices/" + id + "/functions", "")
+            val r = j.optJSONObject("result") ?: return out
+            val fs = r.optJSONArray("functions") ?: return out
+            for (i in 0 until fs.length()) {
+                val f = fs.getJSONObject(i)
+                val code = f.optString("code")
+                val type = f.optString("type")
+                if (type.equals("Boolean", true)) {
+                    out.add(code)
+                } else if (type.equals("Enum", true)) {
+                    var range: JSONArray? = null
+                    try {
+                        range = JSONObject(f.optString("values")).optJSONArray("range")
+                    } catch (e: Exception) {
+                    }
+                    if (range != null) {
+                        val list = ArrayList<String>()
+                        for (k in 0 until range.length()) list.add(range.optString(k))
+                        if (list.contains("arm") && list.contains("disarmed")) out.add(code + "#arm#disarmed")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+        }
+        return out
+    }
+
+    private fun describe(st: JSONArray?): String {
+        if (st == null || st.length() == 0) return "нет данных о состоянии"
+        val sb = StringBuilder("состояние: ")
+        val n = minOf(st.length(), 12)
+        for (k in 0 until n) {
+            val x = st.getJSONObject(k)
+            sb.append(x.optString("code")).append("=").append(x.opt("value").toString())
+            if (k < n - 1) sb.append(", ")
+        }
+        return sb.toString()
+    }
+
     fun devices(): List<Dev> {
         val j = api("GET", "/v1.0/users/" + uid + "/devices", "")
         val arr = j.optJSONArray("result") ?: return ArrayList()
         val out = ArrayList<Dev>()
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
-            val codes = ArrayList<String>()
+            val id = o.optString("id")
             val st = o.optJSONArray("status")
+            val statusCodes = ArrayList<String>()
             if (st != null) {
                 for (k in 0 until st.length()) {
                     val x = st.getJSONObject(k)
                     val c = x.optString("code")
-                    if (c.startsWith("switch") && x.opt("value") is Boolean) codes.add(c)
+                    if (c.startsWith("switch") && x.opt("value") is Boolean) statusCodes.add(c)
                 }
             }
-            out.add(Dev(o.optString("id"), o.optString("name").replace("|", "/"), o.optBoolean("online"), codes))
+            val fc = functionCodes(id)
+            val all = if (fc.isNotEmpty()) fc else statusCodes
+            val info = if (all.isEmpty()) describe(st) else ""
+            out.add(Dev(id, o.optString("name").replace("|", "/"), o.optBoolean("online"), all, info))
         }
         return out
     }
 
-    fun statusBools(id: String): Map<String, Boolean> {
+    fun statusAll(id: String): Map<String, Any> {
         val j = api("GET", "/v1.0/devices/" + id + "/status", "")
         val arr = j.optJSONArray("result") ?: return HashMap()
-        val m = HashMap<String, Boolean>()
+        val m = HashMap<String, Any>()
         for (i in 0 until arr.length()) {
             val x = arr.getJSONObject(i)
             val v = x.opt("value")
-            if (v is Boolean) m[x.optString("code")] = v
+            if (v != null) m[x.optString("code")] = v
         }
         return m
     }
 
-    fun setBool(id: String, code: String, v: Boolean) {
-        val body = "{\"commands\":[{\"code\":\"" + code + "\",\"value\":" + v.toString() + "}]}"
+    fun setRaw(id: String, code: String, rawJson: String) {
+        val body = "{\"commands\":[{\"code\":\"" + code + "\",\"value\":" + rawJson + "}]}"
         api("POST", "/v1.0/devices/" + id + "/commands", body)
+    }
+
+    fun setBool(id: String, code: String, v: Boolean) {
+        setRaw(id, code, v.toString())
     }
 }
 
@@ -222,11 +274,16 @@ object Drivers {
         return t
     }
 
-    // привязка хранится как «тип|id устройства|код|название»
+    // привязка: «tuya|id устройства|код|название» и для режимов охраны ещё «|значение вкл|значение выкл»
     fun set(b: String, on: Boolean): String? {
         try {
             val p = b.split("|")
-            if (p[0] == "tuya") tuya().setBool(p[1], p[2], on) else throw Exception("Неизвестный тип привязки")
+            if (p[0] != "tuya") throw Exception("Неизвестный тип привязки")
+            if (p.size >= 6) {
+                tuya().setRaw(p[1], p[2], "\"" + (if (on) p[4] else p[5]) + "\"")
+            } else {
+                tuya().setBool(p[1], p[2], on)
+            }
             return null
         } catch (e: Exception) {
             return e.message ?: e.toString()
@@ -235,18 +292,22 @@ object Drivers {
 
     fun states(binds: Map<String, String>): Map<String, Boolean> {
         val out = HashMap<String, Boolean>()
-        val cache = HashMap<String, Map<String, Boolean>>()
+        val cache = HashMap<String, Map<String, Any>>()
         for ((slot, b) in binds) {
             try {
                 val p = b.split("|")
                 if (p[0] == "tuya") {
                     var m = cache[p[1]]
                     if (m == null) {
-                        m = tuya().statusBools(p[1])
+                        m = tuya().statusAll(p[1])
                         cache[p[1]] = m
                     }
                     val v = m[p[2]]
-                    if (v != null) out[slot] = v
+                    if (v is Boolean) {
+                        out[slot] = v
+                    } else if (v is String && p.size >= 6) {
+                        out[slot] = (v == p[4])
+                    }
                 }
             } catch (e: Exception) {
             }

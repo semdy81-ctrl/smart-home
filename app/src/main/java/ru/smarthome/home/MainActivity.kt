@@ -743,7 +743,7 @@ class MainActivity : Activity() {
                 for (d in list) {
                     sb.append(d.name)
                     sb.append(if (d.online) " · в сети · " else " · не в сети · ")
-                    sb.append(d.codes.joinToString(","))
+                    sb.append(if (d.codes.isEmpty()) d.info else d.codes.joinToString(","))
                     sb.append("\n")
                 }
                 sb.toString()
@@ -792,8 +792,10 @@ class MainActivity : Activity() {
         refs.add("")
         for (d in devs) {
             for (c in d.codes) {
-                names.add(d.name + " · " + c)
-                refs.add("tuya|" + d.id + "|" + c + "|" + d.name + " · " + c)
+                val parts = c.split("#")
+                val extra = if (parts.size == 3) " (" + parts[1] + "/" + parts[2] + ")" else ""
+                names.add(d.name + " · " + parts[0] + extra)
+                refs.add("tuya|" + d.id + "|" + parts[0] + "|" + d.name + " · " + parts[0] + (if (parts.size == 3) "|" + parts[1] + "|" + parts[2] else ""))
             }
         }
         AlertDialog.Builder(this)
