@@ -21,6 +21,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.text.Editable
@@ -138,6 +139,7 @@ class MainActivity : Activity() {
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         Store.init(this)
         restoreState()
+        applyKeepScreen()
         // планшет — альбомная ориентация, телефон — книжная (поворот по желанию пользователя)
         requestedOrientation = if (resources.configuration.smallestScreenWidthDp >= 600)
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_FULL_USER
@@ -164,6 +166,12 @@ class MainActivity : Activity() {
 
     override fun onBackPressed() {
         if (screen == "main") super.onBackPressed() else show("main")
+    }
+
+    // экран не гаснет, пока приложение открыто (по умолчанию включено)
+    private fun applyKeepScreen() {
+        if (Store.get("keep_screen") != "0") window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     // ---------- сохранение положения приборов между запусками ----------
@@ -1086,6 +1094,15 @@ class MainActivity : Activity() {
         pg.add(header("Подключения", R.drawable.ic_gear), MATCH, px(64), mb = 12)
         val sv = ScrollView(this)
         val col = lin(true)
+        val keep = Store.get("keep_screen") != "0"
+        val ks = card(if (keep) AMBER_BG else PANEL, if (keep) AMBER else LINE, if (keep) 2 else 1, 12, false) {
+            Store.put("keep_screen", if (keep) "0" else "1")
+            applyKeepScreen()
+            show("settings", false)
+        }
+        ks.setPadding(px(12), px(14), px(12), px(14))
+        ks.add(txt(if (keep) "Не гасить экран: включено" else "Не гасить экран: выключено", 20, if (keep) AMBER else TEXT, true))
+        col.add(ks, MATCH, WRAP, mb = 16)
         col.add(txt("Smart Life (Tuya, облако)", 24, TEXT, true), mb = 10)
         col.add(field("Access ID", "tuya_id"), MATCH, WRAP, mb = 10)
         col.add(field("Access Secret", "tuya_secret", true), MATCH, WRAP, mb = 10)
