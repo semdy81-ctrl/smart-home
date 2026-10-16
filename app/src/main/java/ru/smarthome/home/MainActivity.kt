@@ -78,6 +78,7 @@ object St {
     var shopTempV = 14.0
     var shopSet = 5.5
     var shopMode = ""
+    var shopRelay: Boolean? = null
     var shopLight = false
     var shopHeat = true
     var facade = false
@@ -768,6 +769,8 @@ class MainActivity : Activity() {
         row.add(stepBtn(R.drawable.ic_up) { changeShopSet(1) }, px(sz(56)), px(sz(56)), ml = sz(14))
         c.add(row, WRAP, WRAP, mt = sz(18))
         if (St.shopMode.isNotEmpty()) c.add(txt("режим: " + modeName(St.shopMode), sz(16), MUTED), mt = sz(10))
+        val relay = St.shopRelay
+        if (relay != null) c.add(txt(if (relay) "нагрев идёт" else "нагрев не идёт", sz(16), if (relay) AMBER else MUTED, relay), mt = sz(6))
         return c
     }
 
@@ -822,6 +825,7 @@ class MainActivity : Activity() {
             var tCur: Double? = null
             var tSet: Double? = null
             var tMode = ""
+            var tRelay: Boolean? = null
             val tid = thermoId()
             if (tid.isNotEmpty()) {
                 try {
@@ -830,12 +834,16 @@ class MainActivity : Activity() {
                     tCur = th.real(st[th.curCode], th.curScale)
                     tSet = th.real(st[th.setCode], th.setScale)
                     if (th.modeCode.isNotEmpty()) tMode = st[th.modeCode]?.toString() ?: ""
+                    // реле нагрузки: switch_1, если кнопка «Отопление» привязана к другому переключателю
+                    val pc = Store.get("bind_shop_heat").split("|").getOrElse(2) { "" }
+                    if (pc != "switch_1") tRelay = st["switch_1"] as? Boolean
                 } catch (e: Exception) {
                 }
             }
             val tc = tCur
             val ts = tSet
             val tm = tMode
+            val tr = tRelay
             val zi = z
             Net.ui {
                 refreshing = false
@@ -884,6 +892,10 @@ class MainActivity : Activity() {
                 }
                 if (tm != St.shopMode) {
                     St.shopMode = tm
+                    changed = true
+                }
+                if (tr != St.shopRelay) {
+                    St.shopRelay = tr
                     changed = true
                 }
                 if (changed && screen != "settings" && screen != "bind" && screen != "ewl_login") show(screen, false)
@@ -1099,7 +1111,7 @@ class MainActivity : Activity() {
         val rules = listOf(
             Triple("breaker", "kws-306wf", "switch_1@p"),
             Triple("alarm_house", "сигнализация", "master_mode#arm#disarmed"),
-            Triple("shop_heat", "ик отопление мастерская", "switch_1")
+            Triple("shop_heat", "ик отопление мастерская", "switch_all")
         )
         var n = 0
         for ((slot, namePart, code) in rules) {
