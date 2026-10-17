@@ -186,7 +186,7 @@ class MainActivity : Activity() {
 
     override fun onBackPressed() {
         if (screen == "main") super.onBackPressed()
-        else if (screen == "camera") show(camBack, false)
+        else if (screen == "camera") camGoBack()
         else show("main")
     }
 
@@ -671,19 +671,25 @@ class MainActivity : Activity() {
     private fun camBtn(name: String): LinearLayout {
         val c = lin(false, Gravity.CENTER_VERTICAL)
         c.background = bg(CHIP, LINE, 1, 16)
-        c.setPadding(px(20), 0, px(20), 0)
+        c.setPadding(px(10), 0, px(10), 0)
         c.isClickable = true
         c.setOnClickListener { openCam(if (name == "Зал") "hall" else "boiler") }
-        c.add(icon(R.drawable.ic_camera, TEAL), px(30), px(30), mr = 14)
-        c.add(txt(name, 24, TEXT, true))
+        c.add(icon(R.drawable.ic_camera, TEAL), px(24), px(24), mr = 8)
+        c.add(txt(name, 18, TEXT, true))
         return c
     }
 
     private fun tileCams(): View {
         val body = lin(true)
-        body.add(camBtn("Зал"), MATCH, 0, 1f, mb = 10)
-        body.add(camBtn("Котельная"), MATCH, 0, 1f)
-        return tile(R.drawable.ic_camera, "Камеры", "просмотр", body)
+        val both = card(CHIP, TEAL, 2, 16, false) { openCamGroup("house") }
+        both.add(icon(R.drawable.ic_camera, TEAL), px(30), px(30), mr = 12)
+        both.add(txt("Обе камеры", 24, TEXT, true))
+        body.add(both, MATCH, 0, 1.3f, mb = 10)
+        val row = lin(false)
+        row.add(camBtn("Зал"), 0, MATCH, 1f, mr = 10)
+        row.add(camBtn("Котельная"), 0, MATCH, 1f)
+        body.add(row, MATCH, 0, 1f)
+        return tile(R.drawable.ic_camera, "Камеры", "Зал и Котельная", body)
     }
 
     // ---------- меню «Мастерская» ----------
@@ -812,38 +818,57 @@ class MainActivity : Activity() {
     }
 
     // ---------- камеры (Dahua, RTSP) ----------
-    private var player: ExoPlayer? = null
+    private val players = ArrayList<ExoPlayer>()
     private var camList: List<Cam> = ArrayList()
     private var camIdx = 0
     private var camBack = "main"
     private var camMain = false
+    private var camGrid = false
+    private var camFromGrid = false
 
     private fun configured(group: String): List<Cam> =
         CAMS.filter { it.group == group && Store.get("cam_ip_" + it.id).isNotEmpty() }
+
+    private fun needCamSetup(msg: String) {
+        AlertDialog.Builder(this)
+            .setMessage(msg)
+            .setPositiveButton("Подключения") { _, _ -> show("settings") }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
 
     private fun openCam(id: String) {
         val c = CAMS.first { it.id == id }
         val list = configured(c.group)
         val idx = list.indexOfFirst { it.id == id }
         if (idx < 0) {
-            toast("Камера «" + c.def + "» не настроена: укажите IP в «Подключениях»")
+            needCamSetup("Камера «" + c.def + "» не настроена. Укажите её IP-адрес (и порт, если он не 554) в «Подключениях».")
             return
         }
         camList = list
         camIdx = idx
+        camGrid = false
+        camFromGrid = false
         camBack = screen
         show("camera", false)
     }
 
+    // все настроенные камеры группы открываются сразу, плитками
     private fun openCamGroup(group: String) {
         val list = configured(group)
         if (list.isEmpty()) {
-            toast("Камеры не настроены: укажите IP в «Подключениях»")
+            needCamSetup("Камеры не настроены. Укажите IP-адреса (и порты, если они не 554) в «Подключениях».")
             return
         }
         camList = list
         camIdx = 0
+        camGrid = list.size > 1
+        camFromGrid = false
         camBack = screen
+        if (group == "house") {
+            val missing = CAMS.filter { it.group == group && Store.get("cam_ip_" + it.id).isEmpty() }
+            if (missing.isNotEmpty()) toast("Не настроена камера: " + missing.joinToString(", ") { it.def })
+        }
         show("camera", false)
     }
 
@@ -856,41 +881,53 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun camGoBack() {
+        if (camFromGrid) {
+            camFromGrid = false
+            camGrid = true
+            show("camera", false)
+        } else {
+            show(camBack, false)
+        }
+    }
+
+    // в поле камеры можно указать «IP» или «IP:порт»; лишнее (rtsp://, путь) отбрасывается
     private fun camUrl(c: Cam, main: Boolean): String {
-        val ip = Store.get("cam_ip_" + c.id)
+        val raw = Store.get("cam_ip_" + c.id).trim().removePrefix("rtsp://").substringBefore("/")
+        val ip = raw.substringBefore(":")
+        val port = raw.substringAfter(":", "554").ifEmpty { "554" }
         val user = Store.get("cam_user").ifEmpty { "admin" }
         val pass = Store.get("cam_pass")
         val auth = if (pass.isEmpty()) Uri.encode(user) else Uri.encode(user) + ":" + Uri.encode(pass)
-        return "rtsp://" + auth + "@" + ip + ":554/cam/realmonitor?channel=1&subtype=" + (if (main) "0" else "1")
+        return "rtsp://" + auth + "@" + ip + ":" + port + "/cam/realmonitor?channel=1&subtype=" + (if (main) "0" else "1")
     }
 
     private fun stopPlayer() {
-        val p = player
-        player = null
-        if (p != null) {
+        for (p in players) {
             try {
                 p.release()
             } catch (e: Exception) {
             }
         }
+        players.clear()
     }
 
     // быстрая проверка: отвечает ли камера на порту RTSP и что отвечает на запрос
-    private fun probeCamera(host: String, path: String, out: (String) -> Unit) {
+    private fun probeCamera(host: String, port: Int, path: String, out: (String) -> Unit) {
         Net.bg {
             val res: String = try {
                 val s = java.net.Socket()
-                s.connect(java.net.InetSocketAddress(host, 554), 4000)
+                s.connect(java.net.InetSocketAddress(host, port), 4000)
                 s.soTimeout = 4000
-                val req = "DESCRIBE rtsp://" + host + ":554" + path + " RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\n\r\n"
+                val req = "DESCRIBE rtsp://" + host + ":" + port + path + " RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\n\r\n"
                 s.getOutputStream().write(req.toByteArray(Charsets.UTF_8))
                 val line = s.getInputStream().bufferedReader(Charsets.UTF_8).readLine() ?: ""
                 s.close()
-                "Порт 554 открыт, ответ камеры: " + line
+                "Порт " + port + " открыт, ответ камеры: " + line
             } catch (e: java.net.SocketTimeoutException) {
                 "Камера не отвечает (таймаут): проверьте IP-адрес и что устройство в той же сети, что и камера"
             } catch (e: java.net.ConnectException) {
-                "Порт 554 закрыт или IP неверный: " + (e.message ?: "")
+                "Порт " + port + " закрыт или IP неверный: " + (e.message ?: "")
             } catch (e: Exception) {
                 "Ошибка проверки: " + (e.message ?: e.toString())
             }
@@ -898,11 +935,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun startPlayer(sv: SurfaceView, status: TextView, url: String) {
-        stopPlayer()
+    private fun startPlayer(sv: SurfaceView, status: TextView, url: String, compact: Boolean) {
         val pass = Store.get("cam_pass")
         val uri = Uri.parse(url)
         val host = uri.host ?: ""
+        val port = if (uri.port > 0) uri.port else 554
         val path = (uri.path ?: "") + "?" + (uri.query ?: "")
         val p = ExoPlayer.Builder(this).build()
         p.setVideoSurfaceView(sv)
@@ -917,6 +954,11 @@ class MainActivity : Activity() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                if (compact) {
+                    status.text = "Нет изображения\n" + error.errorCodeName + "\nНажмите, чтобы подробнее"
+                    status.visibility = View.VISIBLE
+                    return
+                }
                 var msg = error.errorCodeName + ": " + (error.message ?: "")
                 val cause = error.cause
                 if (cause != null) msg += " / " + (cause.message ?: cause.javaClass.simpleName)
@@ -924,19 +966,81 @@ class MainActivity : Activity() {
                 val shown = msg
                 status.text = "Нет изображения.\n" + shown + "\nПроверяю камеру…"
                 status.visibility = View.VISIBLE
-                probeCamera(host, path) { r -> status.text = "Нет изображения.\n" + shown + "\n" + r }
+                probeCamera(host, port, path) { r -> status.text = "Нет изображения.\n" + shown + "\n" + r }
             }
         })
         val src = RtspMediaSource.Factory().setForceUseRtpTcp(true).createMediaSource(MediaItem.fromUri(url))
         p.setMediaSource(src)
         p.prepare()
         p.playWhenReady = true
-        player = p
+        players.add(p)
     }
 
     private fun buildCamera(): View {
+        stopPlayer()
         if (camList.isEmpty()) return buildMain()
         if (camIdx >= camList.size) camIdx = 0
+        return if (camGrid && camList.size > 1) buildCameraGrid() else buildCameraSingle()
+    }
+
+    private fun camCell(i: Int): View {
+        val c = camList[i]
+        val fr = FrameLayout(this)
+        fr.setBackgroundColor(0xFF000000.toInt())
+        val sv = SurfaceView(this)
+        fr.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
+        val st = txt("Подключаюсь…", 14, TEXT, false, true)
+        val lp = FrameLayout.LayoutParams(MATCH, WRAP, Gravity.CENTER)
+        lp.setMargins(px(8), px(8), px(8), px(8))
+        fr.addView(st, lp)
+        fr.addView(pillP(null, c.def, TEXT, null), flp(Gravity.START or Gravity.TOP, 6))
+        fr.isClickable = true
+        fr.setOnClickListener {
+            camIdx = i
+            camGrid = false
+            camFromGrid = true
+            show("camera", false)
+        }
+        startPlayer(sv, st, camUrl(c, false), true)
+        return fr
+    }
+
+    private fun buildCameraGrid(): View {
+        val n = camList.size
+        val cols = if (portrait) (if (n <= 2) 1 else 2) else (if (n <= 2) n else if (n <= 4) 2 else 3)
+        val rows = (n + cols - 1) / cols
+        val pg = page()
+        val title = if (camList[0].group == "house") "Камеры дома" else "Камеры двора"
+        pg.add(header(title, R.drawable.ic_camera), MATCH, px(56), mb = 12)
+        val grid = lin(true)
+        var k = 0
+        for (r in 0 until rows) {
+            val row = lin(false)
+            for (ci in 0 until cols) {
+                val mr = if (ci < cols - 1) 8 else 0
+                if (k < n) {
+                    row.add(camCell(k), 0, MATCH, 1f, mr = mr)
+                    k++
+                } else {
+                    row.add(View(this), 0, MATCH, 1f, mr = mr)
+                }
+            }
+            grid.add(row, MATCH, 0, 1f, mb = if (r < rows - 1) 8 else 0)
+        }
+        pg.add(grid, MATCH, 0, 1f, mb = 12)
+        val bar = lin(false)
+        val back = card(PANEL, LINE, 1, 22, false) { camGoBack() }
+        back.add(icon(R.drawable.ic_back, TEAL), px(26), px(26), mr = 10)
+        back.add(txt("Назад", 22, TEXT, true))
+        bar.add(back, 0, MATCH, 1f, mr = 10)
+        val ref = card(PANEL, LINE, 1, 22, true) { show("camera", false) }
+        ref.add(txt("Обновить", 22, TEXT, true))
+        bar.add(ref, 0, MATCH, 1f)
+        pg.add(bar, MATCH, px(64))
+        return pg
+    }
+
+    private fun buildCameraSingle(): View {
         val c = camList[camIdx]
         val pg = page()
         pg.add(header(c.def, R.drawable.ic_camera), MATCH, px(56), mb = 12)
@@ -950,7 +1054,7 @@ class MainActivity : Activity() {
         fr.addView(st, lp)
         pg.add(fr, MATCH, 0, 1f, mb = 12)
         val bar = lin(false)
-        val back = card(PANEL, LINE, 1, 22, false) { show(camBack, false) }
+        val back = card(PANEL, LINE, 1, 22, false) { camGoBack() }
         back.add(icon(R.drawable.ic_back, TEAL), px(26), px(26), mr = 10)
         back.add(txt("Назад", 22, TEXT, true))
         bar.add(back, 0, MATCH, 1.4f, mr = 10)
@@ -963,6 +1067,9 @@ class MainActivity : Activity() {
             ni.rotation = 180f
             next.add(ni, px(26), px(26))
             bar.add(next, 0, MATCH, 1f, mr = 10)
+            val all = card(PANEL, LINE, 1, 22, true) { camGrid = true; camFromGrid = false; show("camera", false) }
+            all.add(txt("Все", 22, TEXT, true))
+            bar.add(all, 0, MATCH, 1f, mr = 10)
         }
         val q = card(if (camMain) AMBER_BG else PANEL, if (camMain) AMBER else LINE, if (camMain) 2 else 1, 22, true) {
             camMain = !camMain
@@ -971,7 +1078,7 @@ class MainActivity : Activity() {
         q.add(txt(if (camMain) "HD" else "SD", 22, if (camMain) AMBER else TEXT, true))
         bar.add(q, 0, MATCH, 1f)
         pg.add(bar, MATCH, px(64))
-        startPlayer(sv, st, camUrl(c, camMain))
+        startPlayer(sv, st, camUrl(c, camMain), false)
         return pg
     }
 
@@ -1356,7 +1463,7 @@ class MainActivity : Activity() {
         col.add(txt("Камеры (Dahua, RTSP)", 24, TEXT, true), mt = 10, mb = 10)
         col.add(field("Логин камер", "cam_user"), MATCH, WRAP, mb = 10)
         col.add(field("Пароль камер", "cam_pass", true), MATCH, WRAP, mb = 10)
-        col.add(txt("IP-адреса камер в вашей сети; пустое поле — камеры нет", 17, MUTED), mb = 10)
+        col.add(txt("IP камеры. Если порт не 554, укажите его через двоеточие, например 192.168.1.50:8554. Пустое поле — камеры нет", 17, MUTED), mb = 10)
         for (cm in CAMS) col.add(field(cm.def, "cam_ip_" + cm.id), MATCH, WRAP, mb = 10)
         val bind = card(PANEL, LINE, 1, 12, false) { show("bind") }
         bind.add(txt("Привязка кнопок к устройствам", 20, TEXT, true))
