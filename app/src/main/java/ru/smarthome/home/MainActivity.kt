@@ -875,9 +875,35 @@ class MainActivity : Activity() {
         }
     }
 
+    // быстрая проверка: отвечает ли камера на порту RTSP и что отвечает на запрос
+    private fun probeCamera(host: String, path: String, out: (String) -> Unit) {
+        Net.bg {
+            val res: String = try {
+                val s = java.net.Socket()
+                s.connect(java.net.InetSocketAddress(host, 554), 4000)
+                s.soTimeout = 4000
+                val req = "DESCRIBE rtsp://" + host + ":554" + path + " RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\n\r\n"
+                s.getOutputStream().write(req.toByteArray(Charsets.UTF_8))
+                val line = s.getInputStream().bufferedReader(Charsets.UTF_8).readLine() ?: ""
+                s.close()
+                "Порт 554 открыт, ответ камеры: " + line
+            } catch (e: java.net.SocketTimeoutException) {
+                "Камера не отвечает (таймаут): проверьте IP-адрес и что устройство в той же сети, что и камера"
+            } catch (e: java.net.ConnectException) {
+                "Порт 554 закрыт или IP неверный: " + (e.message ?: "")
+            } catch (e: Exception) {
+                "Ошибка проверки: " + (e.message ?: e.toString())
+            }
+            Net.ui { out(res) }
+        }
+    }
+
     private fun startPlayer(sv: SurfaceView, status: TextView, url: String) {
         stopPlayer()
         val pass = Store.get("cam_pass")
+        val uri = Uri.parse(url)
+        val host = uri.host ?: ""
+        val path = (uri.path ?: "") + "?" + (uri.query ?: "")
         val p = ExoPlayer.Builder(this).build()
         p.setVideoSurfaceView(sv)
         p.addListener(object : Player.Listener {
@@ -892,9 +918,13 @@ class MainActivity : Activity() {
 
             override fun onPlayerError(error: PlaybackException) {
                 var msg = error.errorCodeName + ": " + (error.message ?: "")
+                val cause = error.cause
+                if (cause != null) msg += " / " + (cause.message ?: cause.javaClass.simpleName)
                 if (pass.isNotEmpty()) msg = msg.replace(pass, "***")
-                status.text = "Нет изображения.\n" + msg + "\nПроверьте IP, пароль и что планшет в одной сети с камерой."
+                val shown = msg
+                status.text = "Нет изображения.\n" + shown + "\nПроверяю камеру…"
                 status.visibility = View.VISIBLE
+                probeCamera(host, path) { r -> status.text = "Нет изображения.\n" + shown + "\n" + r }
             }
         })
         val src = RtspMediaSource.Factory().setForceUseRtpTcp(true).createMediaSource(MediaItem.fromUri(url))
