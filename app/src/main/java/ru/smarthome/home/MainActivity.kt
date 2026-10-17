@@ -1,5 +1,6 @@
 package ru.smarthome.home
 
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
@@ -19,6 +20,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
 import android.view.SurfaceView
 import android.view.ViewGroup
@@ -60,6 +63,9 @@ private val PHOTO = 0xFF1A2129.toInt()
 private val PILL = 0xD912171D.toInt()
 private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
+
+// версия кода экрана: должна совпадать с versionName в app/build.gradle
+private const val CODE_VER = "0.21"
 
 private val NAMES = arrayOf("Дом", "Мастерская", "Хозблок", "Костровая", "Двор")
 private val TEMPS = arrayOf("21,4 °C", "14,0 °C", "", "", "")
@@ -135,7 +141,8 @@ private val CAMS = listOf(
     Cam("y3", "Двор 3", "yard"),
     Cam("y4", "Двор 4", "yard"),
     Cam("y5", "Двор 5", "yard"),
-    Cam("y6", "Двор 6", "yard")
+    Cam("y6", "Двор 6", "yard"),
+    Cam("gate", "Ворота", "gate")
 )
 
 private val EPS = listOf(
@@ -167,7 +174,54 @@ class MainActivity : Activity() {
         root = FrameLayout(this)
         root.setBackgroundColor(BG)
         setContentView(root)
+        installCrashLog()
         show("main")
+        showLastCrash()
+    }
+
+    // ---------- журнал вылетов: причина сохраняется в файл и показывается при следующем запуске ----------
+    private fun installCrashLog() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        val dir = filesDir
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try {
+                val sw = java.io.StringWriter()
+                e.printStackTrace(java.io.PrintWriter(sw))
+                java.io.File(dir, "crash.txt").writeText("Версия " + CODE_VER + ", экран «" + screen + "»\n" + sw.toString().take(3000))
+            } catch (x: Throwable) {
+            }
+            if (prev != null) prev.uncaughtException(t, e)
+        }
+    }
+
+    private fun showLastCrash() {
+        try {
+            val f = java.io.File(filesDir, "crash.txt")
+            if (!f.exists()) return
+            val msg = f.readText()
+            f.delete()
+            AlertDialog.Builder(this)
+                .setTitle("Приложение закрывалось с ошибкой")
+                .setMessage(msg.take(1500))
+                .setPositiveButton("OK", null)
+                .show()
+        } catch (e: Throwable) {
+        }
+    }
+
+    // ошибка при построении экрана не закрывает приложение, а показывается на экране
+    private fun errorPage(name: String, e: Throwable): View {
+        val pg = page()
+        pg.add(header("Ошибка", R.drawable.ic_gear), MATCH, px(56), mb = 12)
+        val sw = java.io.StringWriter()
+        e.printStackTrace(java.io.PrintWriter(sw))
+        val sv = ScrollView(this)
+        sv.addView(txt("Экран «" + name + "», версия " + CODE_VER + "\n" + sw.toString().take(2500), 15, MUTED), FrameLayout.LayoutParams(MATCH, WRAP))
+        pg.add(sv, MATCH, 0, 1f, mb = 12)
+        val back = card(PANEL, LINE, 1, 22, false) { show("main") }
+        back.add(txt("На главный экран", 24, TEXT, true))
+        pg.add(back, MATCH, px(72))
+        return pg
     }
 
     private var portrait = false
@@ -197,7 +251,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (screen == "camera") show("camera", false)
+        if (screen == "camera" || screen == "gate") show(screen, false)
     }
 
     // экран не гаснет, пока приложение открыто (по умолчанию включено)
@@ -252,10 +306,10 @@ class MainActivity : Activity() {
 
     private fun show(name: String, fetch: Boolean = true) {
         saveState()
-        if (name != "camera") stopPlayer()
+        if (name != "camera" && name != "gate") stopPlayer()
         screen = name
         root.removeAllViews()
-        val v: View = when (name) {
+        val v: View = try { when (name) {
             "house" -> if (portrait) buildHouseP() else buildHouse()
             "shop" -> if (portrait) buildShopP() else buildShop()
             "yard" -> if (portrait) buildYardP() else buildYard()
@@ -263,10 +317,15 @@ class MainActivity : Activity() {
             "bind" -> buildBind()
             "ewl_login" -> buildEwlLogin()
             "camera" -> buildCamera()
+            "gate" -> buildGate()
             else -> if (portrait) buildMainP() else buildMain()
+        } } catch (e: Throwable) {
+            stopPlayer()
+            if (name == "main") throw e
+            errorPage(name, e)
         }
         root.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
-        if (fetch && name != "settings" && name != "bind" && name != "ewl_login" && name != "camera") refresh()
+        if (fetch && name != "settings" && name != "bind" && name != "ewl_login" && name != "camera" && name != "gate") refresh()
     }
 
     // ---------- помощники ----------
@@ -549,11 +608,11 @@ class MainActivity : Activity() {
     }
 
     private fun gateCard(): LinearLayout {
-        val c = card(PANEL, LINE, 1, 22, false) { flip("gate") }
+        val c = card(PANEL, LINE, 1, 22, false) { show("gate") }
         c.add(chip(R.drawable.ic_gate, 68, 40, CHIP, SOFT), px(68), px(68), mr = 18)
         val t = lin(true)
         t.add(txt("Ворота", 32, TEXT, true))
-        t.add(txt("Открыть / закрыть", 18, MUTED), mt = 4)
+        t.add(txt("Камера и открытие", 18, MUTED), mt = 4)
         c.add(t)
         return c
     }
@@ -979,11 +1038,18 @@ class MainActivity : Activity() {
                 probeCamera(host, port, path) { r -> status.text = "Нет изображения.\n" + shown + "\n" + r }
             }
         })
-        val src = RtspMediaSource.Factory().setForceUseRtpTcp(true).createMediaSource(MediaItem.fromUri(url))
-        p.setMediaSource(src)
-        p.prepare()
-        p.playWhenReady = true
         players.add(p)
+        try {
+            val src = RtspMediaSource.Factory().setForceUseRtpTcp(true).createMediaSource(MediaItem.fromUri(url))
+            p.setMediaSource(src)
+            p.prepare()
+            p.playWhenReady = true
+        } catch (e: Throwable) {
+            var m = e.javaClass.simpleName + ": " + (e.message ?: "")
+            if (pass.isNotEmpty()) m = m.replace(pass, "***")
+            status.text = "Нет изображения.\n" + m
+            status.visibility = View.VISIBLE
+        }
     }
 
     private fun buildCamera(): View {
@@ -1089,6 +1155,137 @@ class MainActivity : Activity() {
         bar.add(q, 0, MATCH, 1f)
         pg.add(bar, MATCH, px(64))
         startPlayer(sv, st, camUrl(c, camMain), false)
+        return pg
+    }
+
+    // ---------- экран ворот: камера + открытие удержанием ----------
+    private fun gateBound(): Boolean = Store.get("bind_gate").isNotEmpty()
+
+    private fun gateHint(): String = if (gateBound()) "удерживайте 1 секунду" else "ожидает подключения eWeLink"
+
+    // импульс 0,5 с задаёт само реле («Включение на время» в eWeLink), приложение отправляет только «включить»
+    private fun sendGate(status: TextView) {
+        val b = Store.get("bind_gate")
+        if (b.isEmpty()) return
+        val now = System.currentTimeMillis()
+        if (now - lastGate < 5000L) {
+            status.text = "подождите несколько секунд"
+            status.postDelayed({ status.text = gateHint() }, 2500L)
+            return
+        }
+        lastGate = now
+        status.text = "отправляю команду…"
+        Net.bg {
+            val err = Drivers.set(b, true)
+            Net.ui {
+                status.text = if (err == null) "команда отправлена" else "ошибка: " + err
+                if (err != null) toast("Ворота: " + err)
+                status.postDelayed({ status.text = gateHint() }, 4000L)
+            }
+        }
+    }
+
+    private fun gateHoldButton(): View {
+        val on = gateBound()
+        val f = FrameLayout(this)
+        f.background = bg(if (on) AMBER_BG else PANEL, if (on) AMBER else LINE, if (on) 2 else 1, 22)
+        f.clipToOutline = true
+        val fill = View(this)
+        fill.setBackgroundColor(0x66F0B35A)
+        fill.pivotX = 0f
+        fill.scaleX = 0f
+        f.addView(fill, FrameLayout.LayoutParams(MATCH, MATCH))
+        val row = lin(false, Gravity.CENTER)
+        row.add(icon(R.drawable.ic_gate, if (on) AMBER else MUTED), px(44), px(44), mr = 16)
+        val tx = lin(true)
+        tx.add(txt(if (on) "Открыть / закрыть" else "Ворота не подключены", 26, if (on) AMBER else MUTED, true))
+        val hint = txt(gateHint(), 17, if (on) AMBER else MUTED)
+        tx.add(hint, mt = 4)
+        row.add(tx)
+        f.addView(row, FrameLayout.LayoutParams(MATCH, MATCH))
+        var anim: ValueAnimator? = null
+        val fire = Runnable {
+            f.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            sendGate(hint)
+            f.postDelayed({ fill.scaleX = 0f }, 500L)
+        }
+        f.setOnTouchListener(object : View.OnTouchListener {
+            override fun onTouch(v: View, e: MotionEvent): Boolean {
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        if (!on) {
+                            toast("Кнопка заработает после подключения eWeLink и привязки «Ворота» в «Подключениях»")
+                            return true
+                        }
+                        anim?.cancel()
+                        val a = ValueAnimator.ofFloat(0f, 1f)
+                        a.duration = 1000L
+                        a.addUpdateListener { fill.scaleX = it.animatedValue as Float }
+                        a.start()
+                        anim = a
+                        f.postDelayed(fire, 1000L)
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (fill.scaleX < 0.99f) {
+                            f.removeCallbacks(fire)
+                            anim?.cancel()
+                            fill.scaleX = 0f
+                        }
+                    }
+                }
+                return true
+            }
+        })
+        return f
+    }
+
+    private fun buildGate(): View {
+        stopPlayer()
+        val pg = lin(true)
+        val m = if (portrait) 16 else 20
+        pg.setPadding(px(m), px(m), px(m), px(m))
+        pg.add(header("Ворота", R.drawable.ic_gate), MATCH, px(56), mb = 12)
+        val c = CAMS.first { it.id == "gate" }
+        val hasCam = Store.get("cam_ip_gate").isNotEmpty()
+        val fr = FrameLayout(this)
+        fr.setBackgroundColor(0xFF000000.toInt())
+        var sv: SurfaceView? = null
+        val st = txt("Подключаюсь…", 18, TEXT, false, true)
+        if (hasCam) {
+            val s = SurfaceView(this)
+            fr.addView(s, FrameLayout.LayoutParams(MATCH, MATCH))
+            val lp = FrameLayout.LayoutParams(MATCH, WRAP, Gravity.CENTER)
+            lp.setMargins(px(20), px(20), px(20), px(20))
+            fr.addView(st, lp)
+            sv = s
+        } else {
+            val col = lin(true, Gravity.CENTER)
+            col.add(txt("Камера ворот не указана", 24, TEXT, true, true), MATCH, WRAP)
+            col.add(txt("Подключения → Камеры → поле «Ворота»: IP:порт камеры, которая видит ворота. Нажмите, чтобы открыть", 17, MUTED, false, true), MATCH, WRAP, mt = 10, ml = 20, mr = 20)
+            fr.addView(col, FrameLayout.LayoutParams(MATCH, MATCH))
+            fr.isClickable = true
+            fr.setOnClickListener { show("settings") }
+        }
+        pg.add(fr, MATCH, 0, 1f, mb = 12)
+        pg.add(gateHoldButton(), MATCH, px(if (portrait) 92 else 104), mb = 12)
+        val bar = lin(false)
+        val back = card(PANEL, LINE, 1, 22, false) { show("main") }
+        back.add(icon(R.drawable.ic_back, TEAL), px(26), px(26), mr = 10)
+        back.add(txt("Назад", 22, TEXT, true))
+        bar.add(back, 0, MATCH, 1.4f, mr = 10)
+        if (hasCam) {
+            val ref = card(PANEL, LINE, 1, 22, true) { show("gate", false) }
+            ref.add(txt("Обновить", 22, TEXT, true))
+            bar.add(ref, 0, MATCH, 1.2f, mr = 10)
+            val q = card(if (camMain) AMBER_BG else PANEL, if (camMain) AMBER else LINE, if (camMain) 2 else 1, 22, true) {
+                camMain = !camMain
+                show("gate", false)
+            }
+            q.add(txt(if (camMain) "HD" else "SD", 22, if (camMain) AMBER else TEXT, true))
+            bar.add(q, 0, MATCH, 1f)
+        }
+        pg.add(bar, MATCH, px(64))
+        if (sv != null) startPlayer(sv, st, camUrl(c, camMain), false)
         return pg
     }
 
@@ -1281,7 +1478,7 @@ class MainActivity : Activity() {
                     St.shopRelay = tr
                     changed = true
                 }
-                if (changed && screen != "settings" && screen != "bind" && screen != "ewl_login" && screen != "camera") show(screen, false)
+                if (changed && screen != "settings" && screen != "bind" && screen != "ewl_login" && screen != "camera" && screen != "gate") show(screen, false)
             }
         }
     }
@@ -1478,7 +1675,9 @@ class MainActivity : Activity() {
         val bind = card(PANEL, LINE, 1, 12, false) { show("bind") }
         bind.add(txt("Привязка кнопок к устройствам", 20, TEXT, true))
         col.add(bind, MATCH, px(52), mb = 10)
-        col.add(txt("Умный дом · версия " + appVersion(), 16, FAINT), mt = 6)
+        val av = appVersion()
+        col.add(txt("Умный дом · версия " + av + " · код " + CODE_VER, 16, FAINT), mt = 6)
+        if (av != CODE_VER) col.add(txt("Внимание: версия сборки и версия кода MainActivity.kt не совпадают — один из файлов обновления не загружен", 16, AMBER), mt = 6)
         sv.addView(col, FrameLayout.LayoutParams(MATCH, WRAP))
         pg.add(sv, MATCH, 0, 1f, mb = 12)
         val back = card(PANEL, LINE, 1, 22, false) { show("main") }
@@ -1751,13 +1950,13 @@ class MainActivity : Activity() {
     }
 
     private fun gateCardP(): LinearLayout {
-        val c = card(PANEL, LINE, 1, 16, false) { flip("gate") }
+        val c = card(PANEL, LINE, 1, 16, false) { show("gate") }
         c.gravity = Gravity.CENTER_VERTICAL
         c.setPadding(px(16), 0, px(16), 0)
         c.add(chip(R.drawable.ic_gate, 44, 26, CHIP, SOFT), px(44), px(44), mr = 14)
         val t = lin(true)
         t.add(txt("Ворота", 20, TEXT, true))
-        t.add(txt("Открыть / закрыть", 14, MUTED), mt = 2)
+        t.add(txt("Камера и открытие", 14, MUTED), mt = 2)
         c.add(t)
         return c
     }
