@@ -891,14 +891,23 @@ class MainActivity : Activity() {
         }
     }
 
-    // в поле камеры можно указать «IP» или «IP:порт»; лишнее (rtsp://, путь) отбрасывается
+    // в поле камеры: «IP», «IP:порт» (камеры Dahua) или полный адрес потока rtsp://IP:порт/путь (камеры других марок)
     private fun camUrl(c: Cam, main: Boolean): String {
-        val raw = Store.get("cam_ip_" + c.id).trim().removePrefix("rtsp://").substringBefore("/")
-        val ip = raw.substringBefore(":")
-        val port = raw.substringAfter(":", "554").ifEmpty { "554" }
+        val input = Store.get("cam_ip_" + c.id).trim()
         val user = Store.get("cam_user").ifEmpty { "admin" }
         val pass = Store.get("cam_pass")
         val auth = if (pass.isEmpty()) Uri.encode(user) else Uri.encode(user) + ":" + Uri.encode(pass)
+        if (input.lowercase().startsWith("rtsp://") && input.substring(7).contains("/")) {
+            var rest = input.substring(7)
+            if (!rest.substringBefore("/").contains("@")) rest = auth + "@" + rest
+            // типичные пути: /11 — основной поток, /12 — дополнительный
+            if (main && rest.endsWith("/12")) rest = rest.dropLast(3) + "/11"
+            if (!main && rest.endsWith("/11")) rest = rest.dropLast(3) + "/12"
+            return "rtsp://" + rest
+        }
+        val raw = input.removePrefix("rtsp://").substringBefore("/")
+        val ip = raw.substringBefore(":")
+        val port = raw.substringAfter(":", "554").ifEmpty { "554" }
         return "rtsp://" + auth + "@" + ip + ":" + port + "/cam/realmonitor?channel=1&subtype=" + (if (main) "0" else "1")
     }
 
@@ -940,7 +949,8 @@ class MainActivity : Activity() {
         val uri = Uri.parse(url)
         val host = uri.host ?: ""
         val port = if (uri.port > 0) uri.port else 554
-        val path = (uri.path ?: "") + "?" + (uri.query ?: "")
+        val q = uri.query
+        val path = (uri.path ?: "") + (if (q != null) "?" + q else "")
         val p = ExoPlayer.Builder(this).build()
         p.setVideoSurfaceView(sv)
         p.addListener(object : Player.Listener {
@@ -1463,7 +1473,7 @@ class MainActivity : Activity() {
         col.add(txt("Камеры (Dahua, RTSP)", 24, TEXT, true), mt = 10, mb = 10)
         col.add(field("Логин камер", "cam_user"), MATCH, WRAP, mb = 10)
         col.add(field("Пароль камер", "cam_pass", true), MATCH, WRAP, mb = 10)
-        col.add(txt("IP камеры. Если порт не 554, укажите его через двоеточие, например 192.168.1.50:8554. Пустое поле — камеры нет", 17, MUTED), mb = 10)
+        col.add(txt("Dahua: IP камеры, если порт не 554 — через двоеточие (192.168.1.50:8554). Камеры других марок: полный адрес потока, например rtsp://192.168.1.88:554/12. Пустое поле — камеры нет", 17, MUTED), mb = 10)
         for (cm in CAMS) col.add(field(cm.def, "cam_ip_" + cm.id), MATCH, WRAP, mb = 10)
         val bind = card(PANEL, LINE, 1, 12, false) { show("bind") }
         bind.add(txt("Привязка кнопок к устройствам", 20, TEXT, true))
