@@ -65,7 +65,7 @@ private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
 
 // версия кода экрана: должна совпадать с versionName в app/build.gradle
-private const val CODE_VER = "0.21"
+private const val CODE_VER = "0.22"
 
 private val NAMES = arrayOf("Дом", "Мастерская", "Хозблок", "Костровая", "Двор")
 private val TEMPS = arrayOf("21,4 °C", "14,0 °C", "", "", "")
@@ -539,6 +539,25 @@ class MainActivity : Activity() {
         return pg
     }
 
+    // одна строка: если название не помещается, шрифт уменьшается (не меньше minPx)
+    private fun fitOneLine(v: TextView, maxPx: Float, minPx: Float) {
+        v.setSingleLine(true)
+        v.addOnLayoutChangeListener { _, l, _, r, _, _, _, _, _ ->
+            val w = r - l - v.paddingLeft - v.paddingRight
+            if (w > 0) {
+                val p = android.text.TextPaint(v.paint)
+                val text = v.text.toString()
+                var s = maxPx
+                p.textSize = s
+                while (p.measureText(text) > w && s > minPx) {
+                    s -= 1f
+                    p.textSize = s
+                }
+                if (v.textSize != s) v.post { v.setTextSize(TypedValue.COMPLEX_UNIT_PX, s) }
+            }
+        }
+    }
+
     private fun navTile(i: Int): View {
         val sel = i == St.selected
         val c = lin(false, Gravity.CENTER_VERTICAL)
@@ -547,7 +566,9 @@ class MainActivity : Activity() {
         c.isClickable = true
         c.setOnClickListener { onNav(i) }
         c.add(chip(NAV_ICONS[i], 52, 28, if (sel) AMBER_CHIP else CHIP, if (sel) AMBER else SOFT), px(52), px(52), mr = 16)
-        c.add(txt(NAMES[i], 28, TEXT, true), 0, WRAP, 1f)
+        val nm = txt(NAMES[i], 28, TEXT, true)
+        fitOneLine(nm, 28 * u, 16 * u)
+        c.add(nm, 0, WRAP, 1f)
         if (tempOf(i).isNotEmpty()) c.add(txt(tempOf(i), 20, SOFT), WRAP, WRAP, mr = 10)
         c.add(icon(R.drawable.ic_bulb, if (lightOf(i)) AMBER else OFFI), px(26), px(26))
         return c
