@@ -65,7 +65,7 @@ private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
 
 // версия кода экрана: должна совпадать с versionName в app/build.gradle
-private const val CODE_VER = "0.22"
+private const val CODE_VER = "0.23"
 
 private val NAMES = arrayOf("Дом", "Мастерская", "Хозблок", "Костровая", "Двор")
 private val TEMPS = arrayOf("21,4 °C", "14,0 °C", "", "", "")
@@ -1678,7 +1678,12 @@ class MainActivity : Activity() {
         eload.add(txt("Загрузить устройства", 20, AMBER, true))
         erow.add(eload, 0, px(52), 1f)
         col.add(erow, MATCH, WRAP, mb = 10)
-        col.add(eout, MATCH, WRAP, mb = 20)
+        col.add(eout, MATCH, WRAP, mb = 10)
+        val lout = txt(Store.get("ewl_lan_log").ifEmpty { "Локальная сеть: поиск не выполнялся" }, 17, MUTED)
+        val lan = card(PANEL, LINE, 1, 12, false) { runEwlLan(lout) }
+        lan.add(txt("Найти в локальной сети", 20, TEXT, true))
+        col.add(lan, MATCH, px(52), mb = 10)
+        col.add(lout, MATCH, WRAP, mb = 20)
         col.add(txt("ZONT (котёл)", 24, TEXT, true), mt = 10, mb = 10)
         col.add(field("Логин ZONT", "zont_login"), MATCH, WRAP, mb = 10)
         col.add(field("Пароль ZONT", "zont_pass", true), MATCH, WRAP, mb = 10)
@@ -1834,6 +1839,26 @@ class MainActivity : Activity() {
             sb.append("\n")
         }
         return sb.toString()
+    }
+
+    // поиск реле eWeLink в локальной сети (LAN mode), без облака
+    private fun runEwlLan(out: TextView) {
+        out.text = "Ищу реле в локальной сети (около 10 секунд)…"
+        EwelinkLan.discover(this, 10000L) { found ->
+            val devs = Dev.fromJson(Store.get("ewl_devs"))
+            val sb = StringBuilder("Найдено в локальной сети: " + found.size + "\n")
+            if (devs.isEmpty()) sb.append("Список устройств eWeLink не загружен — нажмите «Загрузить устройства»\n")
+            for (d in devs) {
+                val f = found[d.id]
+                sb.append(d.name).append(if (f != null) " · " + f.host + ":" + f.port else " · не найдено").append("\n")
+            }
+            for ((id, f) in found) {
+                if (devs.none { it.id == id }) sb.append("Неизвестное устройство ").append(id).append(" · ").append(f.host).append("\n")
+            }
+            val msg = sb.toString().trimEnd()
+            Store.put("ewl_lan_log", msg)
+            out.text = msg
+        }
     }
 
     private fun runEwlLoad(out: TextView) {
