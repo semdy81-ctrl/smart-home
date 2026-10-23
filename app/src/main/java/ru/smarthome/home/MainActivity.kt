@@ -65,7 +65,7 @@ private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
 
 // версия кода экрана: должна совпадать с versionName в app/build.gradle
-private const val CODE_VER = "0.25"
+private const val CODE_VER = "0.26"
 
 private val NAMES = arrayOf("Дом", "Мастерская", "Хозблок", "Костровая", "Двор")
 private val TEMPS = arrayOf("21,4 °C", "14,0 °C", "", "", "")
@@ -83,6 +83,7 @@ object St {
     var garland = false
     var spotBalcony = false
     var spotGarden = false
+    var pump = false
     var houseHeat = true
     var houseSet = 22
     var houseTemp = "21,4"
@@ -121,6 +122,7 @@ private val SLOTS = listOf(
     Slot("garland", "Дом: гирлянда", { St.garland }, { St.garland = it }),
     Slot("spot_balcony", "Дом: прожектор балкон", { St.spotBalcony }, { St.spotBalcony = it }),
     Slot("spot_garden", "Дом: прожектор огород", { St.spotGarden }, { St.spotGarden = it }),
+    Slot("pump", "Дом: насос скважины", { St.pump }, { St.pump = it }),
     Slot("shop_light", "Мастерская: свет", { St.shopLight }, { St.shopLight = it }),
     Slot("shop_heat", "Мастерская: отопление", { St.shopHeat }, { St.shopHeat = it }),
     Slot("facade", "Мастерская: фасад", { St.facade }, { St.facade = it }),
@@ -475,6 +477,22 @@ class MainActivity : Activity() {
         return c
     }
 
+    // кнопка насоса скважины (Smart Life) — на месте бывшего индикатора «Пожарный извещатель»
+    private fun pumpCard(): LinearLayout {
+        val on = St.pump
+        val s = sty(on, TEAL)
+        val c = card(s.fill, s.stroke, s.sw, 22, false) { flip("pump") }
+        c.add(icon(R.drawable.ic_pump, if (on) TEAL else MUTED), px(36), px(36), mr = 14)
+        val t = lin(true)
+        t.add(txt("Насос скважины", 21, TEXT))
+        val st = lin(false, Gravity.CENTER_VERTICAL)
+        st.add(dot(if (on) TEAL else MUTED), px(10), px(10), mr = 8)
+        st.add(txt(if (on) "включён" else "выключен", 18, if (on) TEAL else MUTED))
+        t.add(st, mt = 4)
+        c.add(t)
+        return c
+    }
+
     private fun gaugeCard(label: String, frac: Float): LinearLayout {
         val c = lin(true, Gravity.CENTER_HORIZONTAL)
         c.background = bg(PANEL, LINE, 1, 22)
@@ -685,7 +703,7 @@ class MainActivity : Activity() {
         pg.add(main, MATCH, 0, 1f, mb = 16)
         val bot = lin(false)
         bot.add(backBtn(), 0, MATCH, 0.8f, mr = 16)
-        bot.add(indicator(R.drawable.ic_flame, "Пожарный извещатель"), 0, MATCH, 1.7f, mr = 16)
+        bot.add(pumpCard(), 0, MATCH, 1.7f, mr = 16)
         bot.add(indicator(R.drawable.ic_gas, "Сигнализатор загазованности"), 0, MATCH, 1.7f, mr = 16)
         bot.add(settingsBtn(), 0, MATCH, 0.8f)
         pg.add(bot, MATCH, px(110))
@@ -1735,7 +1753,8 @@ class MainActivity : Activity() {
         val rules = listOf(
             Triple("breaker", "kws-306wf", "switch_1@p"),
             Triple("alarm_house", "сигнализация", "master_mode#arm#disarmed"),
-            Triple("shop_heat", "ик отопление мастерская", "switch_all")
+            Triple("shop_heat", "ик отопление мастерская", "switch_all"),
+            Triple("pump", "насос скважины", "switch")
         )
         var n = 0
         for ((slot, namePart, code) in rules) {
@@ -2065,7 +2084,7 @@ class MainActivity : Activity() {
         body.add(tileHeat(), MATCH, px(250), mb = 12)
         body.add(tileCams(), MATCH, px(230), mb = 12)
         val ind = lin(false)
-        ind.add(indicator(R.drawable.ic_flame, "Пожарный извещатель"), 0, MATCH, 1f, mr = 12)
+        ind.add(pumpCard(), 0, MATCH, 1f, mr = 12)
         ind.add(indicator(R.drawable.ic_gas, "Сигнализатор загазованности"), 0, MATCH, 1f)
         body.add(ind, MATCH, px(100))
         return scrollPage("Дом", R.drawable.ic_house, body, bottomBar(settingsBtn()))
