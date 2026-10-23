@@ -383,15 +383,49 @@ object Drivers {
                     tuya().setBool(p[1], p[2], on)
                 }
             } else if (p[0] == "ewl") {
-                ewl().setSwitch(p[1], on)
+                ewlSet(p[1], on)
             } else if (p[0] == "ewlp") {
-                ewl().setSwitch(p[1], true)
+                ewlSet(p[1], true)
             } else {
                 throw Exception("Неизвестный тип привязки")
             }
             return null
         } catch (e: Exception) {
             return e.message ?: e.toString()
+        }
+    }
+
+    // облако eWeLink недоступно (например, через Wi-Fi дачи) — не ждём его повторно 5 минут
+    @Volatile private var ewlCloudDownUntil = 0L
+
+    private fun ewlCloudOk(): Boolean = System.currentTimeMillis() >= ewlCloudDownUntil
+
+    private fun ewlCloudFailed() {
+        ewlCloudDownUntil = System.currentTimeMillis() + 5 * 60 * 1000L
+    }
+
+    // eWeLink: сначала локальная сеть (LAN mode), при ошибке — облако
+    private fun ewlSet(id: String, on: Boolean) {
+        var lanErr: String? = null
+        if (EwelinkLan.saved(id) != null) {
+            try {
+                EwelinkLan.setSwitch(id, on)
+                return
+            } catch (e: Exception) {
+                lanErr = e.message ?: e.toString()
+                EwelinkLan.refresh()
+            }
+        }
+        if (!ewlCloudOk()) {
+            throw Exception(if (lanErr != null) "локально: " + lanErr + "; облако eWeLink недоступно"
+                else "реле не найдено в локальной сети, облако eWeLink недоступно")
+        }
+        try {
+            ewl().setSwitch(id, on)
+        } catch (e: Exception) {
+            if (e is java.io.IOException) ewlCloudFailed()
+            val ce = e.message ?: e.toString()
+            throw Exception(if (lanErr != null) "локально: " + lanErr + "; облако: " + ce else ce)
         }
     }
 
@@ -422,7 +456,7 @@ object Drivers {
             val p = b.split("|")
             if (p[0] == "ewl") ewlIds.add(p[1])
         }
-        if (ewlIds.isNotEmpty()) {
+        if (ewlIds.isNotEmpty() && ewlCloudOk()) {
             try {
                 val m = ewl().states(ewlIds)
                 for ((slot, b) in binds) {
@@ -433,6 +467,7 @@ object Drivers {
                     }
                 }
             } catch (e: Exception) {
+                if (e is java.io.IOException) ewlCloudFailed()
             }
         }
         return out

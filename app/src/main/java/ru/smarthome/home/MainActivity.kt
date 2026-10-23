@@ -65,7 +65,7 @@ private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
 
 // версия кода экрана: должна совпадать с versionName в app/build.gradle
-private const val CODE_VER = "0.23"
+private const val CODE_VER = "0.24"
 
 private val NAMES = arrayOf("Дом", "Мастерская", "Хозблок", "Костровая", "Двор")
 private val TEMPS = arrayOf("21,4 °C", "14,0 °C", "", "", "")
@@ -165,6 +165,8 @@ class MainActivity : Activity() {
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         Store.init(this)
+        EwelinkLan.init(this)
+        if (Store.get("ewl_devs").isNotEmpty()) EwelinkLan.refresh()
         restoreState()
         applyKeepScreen()
         // планшет — альбомная ориентация, телефон — книжная (поворот по желанию пользователя)
@@ -1757,7 +1759,8 @@ class MainActivity : Activity() {
         )
         for ((slot, parts) in erules) {
             if (Store.get("bind_" + slot).isNotEmpty()) continue
-            val d = edevs.firstOrNull { dv -> parts.any { p -> norm(dv.name).contains(p) } } ?: continue
+            val d = edevs.firstOrNull { dv -> parts.any { p -> norm(dv.name) == p } }
+                ?: edevs.firstOrNull { dv -> parts.any { p -> norm(dv.name).contains(p) } } ?: continue
             Store.put("bind_" + slot, (if (slot == "gate") "ewlp" else "ewl") + "|" + d.id + "|switch|" + d.name)
             n++
         }

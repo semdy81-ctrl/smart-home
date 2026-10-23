@@ -24,6 +24,26 @@ class LanDevice(val id: String, val host: String, val port: Int)
 // тело шифруется ключом устройства (devicekey из облачного списка, хранится как «ewl_key_<id>»).
 // Найденные адреса сохраняются как «ewl_ip_<id>» = «IP:порт».
 object EwelinkLan {
+    private var appCtx: Context? = null
+    @Volatile private var busy = false
+
+    fun init(c: Context) {
+        appCtx = c.applicationContext
+    }
+
+    // тихий повторный поиск (адреса реле могли смениться); результат сохраняется в Store
+    fun refresh() {
+        val c = appCtx ?: return
+        if (busy) return
+        busy = true
+        Net.ui {
+            try {
+                discover(c, 10000L) { busy = false }
+            } catch (e: Exception) {
+                busy = false
+            }
+        }
+    }
 
     fun saved(id: String): LanDevice? {
         val s = Store.get("ewl_ip_" + id)
