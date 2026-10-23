@@ -65,7 +65,7 @@ private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
 
 // версия кода экрана: должна совпадать с versionName в app/build.gradle
-private const val CODE_VER = "0.24"
+private const val CODE_VER = "0.25"
 
 private val NAMES = arrayOf("Дом", "Мастерская", "Хозблок", "Костровая", "Двор")
 private val TEMPS = arrayOf("21,4 °C", "14,0 °C", "", "", "")
@@ -1184,7 +1184,7 @@ class MainActivity : Activity() {
     // ---------- экран ворот: камера + открытие удержанием ----------
     private fun gateBound(): Boolean = Store.get("bind_gate").isNotEmpty()
 
-    private fun gateHint(): String = if (gateBound()) "удерживайте 1 секунду" else "ожидает подключения eWeLink"
+    private fun gateHint(): String = if (gateBound()) "удерживайте полсекунды" else "ожидает подключения eWeLink"
 
     // импульс 0,5 с задаёт само реле («Включение на время» в eWeLink), приложение отправляет только «включить»
     private fun sendGate(status: TextView) {
@@ -1242,11 +1242,11 @@ class MainActivity : Activity() {
                         }
                         anim?.cancel()
                         val a = ValueAnimator.ofFloat(0f, 1f)
-                        a.duration = 1000L
+                        a.duration = 500L
                         a.addUpdateListener { fill.scaleX = it.animatedValue as Float }
                         a.start()
                         anim = a
-                        f.postDelayed(fire, 1000L)
+                        f.postDelayed(fire, 500L)
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                         if (fill.scaleX < 0.99f) {
