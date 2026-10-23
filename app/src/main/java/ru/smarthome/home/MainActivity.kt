@@ -65,7 +65,7 @@ private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
 
 // версия кода экрана: должна совпадать с versionName в app/build.gradle
-private const val CODE_VER = "0.26"
+private const val CODE_VER = "0.27"
 
 private val NAMES = arrayOf("Дом", "Мастерская", "Хозблок", "Костровая", "Двор")
 private val TEMPS = arrayOf("21,4 °C", "14,0 °C", "", "", "")
@@ -604,9 +604,13 @@ class MainActivity : Activity() {
         }
     }
 
-    // фото выбранного объекта; пока есть только фото дома
+    // фото выбранного объекта (есть для дома и костровой)
     private fun addPhoto(f: FrameLayout): Boolean {
-        val res = if (St.selected == 0) R.drawable.photo_house else 0
+        val res = when (St.selected) {
+            0 -> R.drawable.photo_house
+            3 -> R.drawable.photo_bonfire
+            else -> 0
+        }
         if (res == 0) return false
         val iv = ImageView(this)
         iv.setImageResource(res)
