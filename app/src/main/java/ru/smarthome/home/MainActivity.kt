@@ -65,7 +65,9 @@ private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
 
 // версия кода экрана: должна совпадать с versionName в app/build.gradle
-private const val CODE_VER = "0.27"
+private const val CODE_VER = "0.28"
+private const val IDLE_MS = 10_000L
+private val AUTO_HOME = setOf("house", "shop", "yard")
 
 private val NAMES = arrayOf("Дом", "Мастерская", "Хозблок", "Костровая", "Двор")
 private val TEMPS = arrayOf("21,4 °C", "14,0 °C", "", "", "")
@@ -251,11 +253,32 @@ class MainActivity : Activity() {
     override fun onStop() {
         super.onStop()
         stopPlayer()
+        root.removeCallbacks(idleReturn)
     }
 
     override fun onResume() {
         super.onResume()
         if (screen == "camera" || screen == "gate") show(screen, false)
+        armIdle()
+    }
+
+    // ---------- автовозврат на главный экран ----------
+    // через 10 с без касаний экраны «Дом», «Мастерская», «Двор» возвращаются на главный.
+    // Камеры, экран ворот (с камерой) и настройки не закрываются: там смотрят видео или вводят данные.
+    private val idleReturn = Runnable {
+        if (screen in AUTO_HOME) {
+            if (hasWindowFocus()) show("main") else armIdle()   // открыт диалог — ждём
+        }
+    }
+
+    private fun armIdle() {
+        root.removeCallbacks(idleReturn)
+        if (screen in AUTO_HOME) root.postDelayed(idleReturn, IDLE_MS)
+    }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        armIdle()
     }
 
     // экран не гаснет, пока приложение открыто (по умолчанию включено)
@@ -309,6 +332,7 @@ class MainActivity : Activity() {
     }
 
     private fun show(name: String, fetch: Boolean = true) {
+        val changed = name != screen
         saveState()
         if (name != "camera" && name != "gate") stopPlayer()
         screen = name
@@ -329,6 +353,7 @@ class MainActivity : Activity() {
             errorPage(name, e)
         }
         root.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
+        if (changed) armIdle()   // обновление того же экрана таймер не сбрасывает
         if (fetch && name != "settings" && name != "bind" && name != "ewl_login" && name != "camera" && name != "gate") refresh()
     }
 
