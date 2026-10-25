@@ -544,6 +544,15 @@ class Zont(private val login: String, private val password: String, private val 
                 .put("command_name", "TargetTemperature")
                 .put("command_args", JSONObject().put("value", value))
                 .put("is_guaranteed", true))
+            "tt" -> {
+                // отправляем все зоны целиком, меняем только зону отопления (ГВС не трогаем)
+                val all = try { JSONObject(info.ttRaw) } catch (e: Exception) { JSONObject() }
+                val z = all.optJSONObject(info.zone) ?: JSONObject()
+                z.put("manual", true)
+                z.put("temp", value)
+                all.put(info.zone, z)
+                update(info.id, JSONObject().put("thermostat_target_temps", all))
+            }
             "temp" -> update(info.id, JSONObject().put("thermostat_temp", value))
             "comfort" -> update(info.id, JSONObject().put("thermostat_mode_temps", JSONObject().put("comfort", value)))
             else -> throw Exception("для этого прибора способ задать уставку ещё не определён — пришлите результат «Проверить ZONT»")
@@ -556,9 +565,12 @@ class Zont(private val login: String, private val password: String, private val 
 //              уставка в io["z3k-state"][id контура].target_temp, задаётся командой send_z3k_command;
 //  "temp"    — поле thermostat_temp (старые H-1), задаётся update_device;
 //  "comfort" — thermostat_mode_temps.comfort, задаётся update_device.
+//  "tt"      — thermostat_target_temps: уставки по зонам {"0": ГВС, "1": отопление}, флаг manual —
+//              ручная уставка поверх режима; задаётся update_device (ZONT Connect и подобные).
 class ZontInfo(val id: Long, val name: String, val mode: String, val target: Double, val current: Double?,
                val boilerOn: Boolean, val fail: Boolean, val keys: String, val kind: String,
-               val circuit: Long, val circuitName: String, val circuits: String) {
+               val circuit: Long, val circuitName: String, val circuits: String,
+               val zone: String = "", val ttRaw: String = "", val manual: Boolean = false) {
     companion object {
         private fun num(o: JSONObject?, k: String): Double =
             if (o == null || !o.has(k) || o.isNull(k)) Double.NaN else o.optDouble(k, Double.NaN)
@@ -566,6 +578,10 @@ class ZontInfo(val id: Long, val name: String, val mode: String, val target: Dou
         fun from(d: JSONObject): ZontInfo {
             val id = if (d.has("id") && !d.isNull("id")) d.optLong("id") else d.optLong("device_id")
             val io = d.optJSONObject("io")
+            val st = io?.optJSONObject("last-boiler-state")
+            var zone = ""
+            var ttRaw = ""
+            var manual = false
             var kind = ""
             var target = Double.NaN
             var circuit = 0L
@@ -609,6 +625,26 @@ class ZontInfo(val id: Long, val name: String, val mode: String, val target: Dou
                     } else ks.append("нет io.z3k-state для контура")
                 }
             }
+            val tt = d.optJSONObject("thermostat_target_temps")
+            if (kind.isEmpty() && tt != null) {
+                // зона отопления: «1», иначе первая зона с температурой
+                var zk = if (tt.optJSONObject("1")?.has("temp") == true) "1" else ""
+                if (zk.isEmpty()) {
+                    val it = tt.keys()
+                    while (it.hasNext()) {
+                        val k = it.next()
+                        if (tt.optJSONObject(k)?.has("temp") == true) { zk = k; break }
+                    }
+                }
+                if (zk.isNotEmpty()) {
+                    val z = tt.optJSONObject(zk)
+                    kind = "tt"
+                    zone = zk
+                    ttRaw = tt.toString()
+                    manual = z?.optBoolean("manual", false) ?: false
+                    target = num(z, "temp")
+                }
+            }
             if (kind.isEmpty()) {
                 val temps = d.optJSONObject("thermostat_mode_temps")
                 val c = num(temps, "comfort")
@@ -637,7 +673,7 @@ class ZontInfo(val id: Long, val name: String, val mode: String, val target: Dou
                     }
                 }
             }
-            val st = io?.optJSONObject("last-boiler-state")
+            if (target.isNaN()) target = num(st, "target_temp")   // фактическая целевая из состояния котла
             var mode = if (d.isNull("thermostat_mode")) "" else d.optString("thermostat_mode", "")
             if (mode.isEmpty() && st != null && !st.isNull("thermostat_mode")) mode = st.optString("thermostat_mode", "")
             val on = st != null && st.optInt("boiler_work_time", 0) > 0
@@ -671,7 +707,7 @@ class ZontInfo(val id: Long, val name: String, val mode: String, val target: Dou
                 }
             }
             return ZontInfo(id, d.optString("name"), mode, target, cur, on, fail, ks.toString().trim(),
-                kind, circuit, cname, cl.toString().trim())
+                kind, circuit, cname, cl.toString().trim(), zone, ttRaw, manual)
         }
     }
 
@@ -689,6 +725,8 @@ class ZontInfo(val id: Long, val name: String, val mode: String, val target: Dou
                 if (circuits.isNotEmpty()) sb.append("\nВсе контуры: ").append(circuits)
                 if (target.isNaN()) sb.append("\nУставка контура не найдена, поля: ").append(keys)
             }
+            "tt" -> sb.append("\nУставка: зона ").append(zone).append(" (thermostat_target_temps), ")
+                .append(if (manual) "задана вручную" else "по режиму")
             "temp" -> sb.append("\nУставка: поле thermostat_temp")
             "comfort" -> sb.append("\nУставка: thermostat_mode_temps.comfort")
             else -> sb.append("\nУставка не найдена. Данные прибора:").append(keys)

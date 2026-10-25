@@ -65,7 +65,7 @@ private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
 
 // версия кода экрана: должна совпадать с versionName в app/build.gradle
-private const val CODE_VER = "0.30"
+private const val CODE_VER = "0.31"
 private const val IDLE_MS = 10_000L
 private val AUTO_HOME = setOf("house", "shop", "yard")
 
@@ -1588,14 +1588,19 @@ class MainActivity : Activity() {
             if (seq != setSeq) return@postDelayed
             val value = St.houseSet
             Net.bg {
-                val err: String? = try {
+                val msg: String = try {
                     val zi = Drivers.zontInfo() ?: throw Exception("контроллер не найден")
                     Drivers.zont().setTarget(zi, value)
-                    null
+                    // проверяем, что прибор принял уставку
+                    Thread.sleep(4000L)
+                    val after = try { Drivers.zontInfo() } catch (e: Exception) { null }
+                    if (after == null || after.target.isNaN()) "ZONT: уставка " + value + " °C отправлена"
+                    else if (Math.round(after.target).toInt() == value) "ZONT: уставка " + value + " °C установлена"
+                    else "ZONT принял команду, но в приборе пока " + fmt1(after.target) + " °C"
                 } catch (e: Exception) {
-                    e.message ?: e.toString()
+                    "ZONT: " + (e.message ?: e.toString())
                 }
-                Net.ui { toast(if (err == null) "ZONT: уставка " + value + " °C отправлена" else "ZONT: " + err) }
+                Net.ui { toast(msg) }
             }
         }, 1500L)
     }
