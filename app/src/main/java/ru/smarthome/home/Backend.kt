@@ -354,6 +354,21 @@ object Drivers {
         return z
     }
 
+    // выбранный контроллер ZONT; если сохранён неверный номер (раньше мог сохраниться 0) — берём первый
+    fun zontInfo(): ZontInfo? {
+        val arr = zont().devices()
+        if (arr.length() == 0) return null
+        val want = Store.get("zont_dev")
+        var first: ZontInfo? = null
+        for (i in 0 until arr.length()) {
+            val z = ZontInfo.from(arr.getJSONObject(i))
+            if (first == null) first = z
+            if (z.id.toString() == want) return z
+        }
+        if (first != null) Store.put("zont_dev", first.id.toString())
+        return first
+    }
+
     fun tuya(): Tuya {
         val cur = tuya
         if (cur != null) return cur
@@ -496,7 +511,7 @@ class Zont(private val login: String, private val password: String, private val 
                 val text = Net.call("POST", b + method, h, body.toString())
                 val j = JSONObject(text)
                 base = b
-                if (!j.optBoolean("ok")) {
+                if ((j.has("ok") && !j.optBoolean("ok")) || (!j.has("ok") && j.has("error") && !j.isNull("error"))) {
                     val ui = j.optString("error_ui", "")
                     throw ZontError(if (ui.isNotEmpty()) ui else j.optString("error", "ошибка"))
                 }
@@ -519,57 +534,144 @@ class Zont(private val login: String, private val password: String, private val 
         params.put("device_id", deviceId)
         post("update_device", params)
     }
+
+    // уставка отопления — способом, который подходит этому прибору
+    fun setTarget(info: ZontInfo, value: Int) {
+        when (info.kind) {
+            "z3k" -> post("send_z3k_command", JSONObject()
+                .put("device_id", info.id)
+                .put("object_id", info.circuit)
+                .put("command_name", "TargetTemperature")
+                .put("command_args", JSONObject().put("value", value))
+                .put("is_guaranteed", true))
+            "temp" -> update(info.id, JSONObject().put("thermostat_temp", value))
+            else -> update(info.id, JSONObject().put("thermostat_mode_temps", JSONObject().put("comfort", value)))
+        }
+    }
 }
 
-class ZontInfo(val id: Long, val name: String, val mode: String, val comfort: Double, val current: Double?,
-               val boilerOn: Boolean, val fail: Boolean, val keys: String) {
+// Описание контроллера ZONT. Уставка бывает в одном из трёх мест (зависит от модели):
+//  "z3k"     — новые приборы (Connect+, H-2000+, H-1V…): контур из z3k_config.heating_circuits,
+//              уставка в io["z3k-state"][id контура].target_temp, задаётся командой send_z3k_command;
+//  "temp"    — поле thermostat_temp (старые H-1), задаётся update_device;
+//  "comfort" — thermostat_mode_temps.comfort, задаётся update_device.
+class ZontInfo(val id: Long, val name: String, val mode: String, val target: Double, val current: Double?,
+               val boilerOn: Boolean, val fail: Boolean, val keys: String, val kind: String,
+               val circuit: Long, val circuitName: String, val circuits: String) {
     companion object {
+        private fun num(o: JSONObject?, k: String): Double =
+            if (o == null || !o.has(k) || o.isNull(k)) Double.NaN else o.optDouble(k, Double.NaN)
+
         fun from(d: JSONObject): ZontInfo {
-            val temps = d.optJSONObject("thermostat_mode_temps")
-            val comfort = if (temps != null && temps.has("comfort")) temps.optDouble("comfort", Double.NaN) else Double.NaN
+            val id = if (d.has("id") && !d.isNull("id")) d.optLong("id") else d.optLong("device_id")
+            val io = d.optJSONObject("io")
+            var kind = ""
+            var target = Double.NaN
+            var circuit = 0L
+            var cname = ""
             var cur: Double? = null
-            val th = d.optJSONArray("thermometers")
-            if (th != null) {
-                for (i in 0 until th.length()) {
-                    val t = th.getJSONObject(i)
-                    if (!t.optBoolean("is_assigned_to_slot", true)) continue
-                    if (t.isNull("last_value")) continue
-                    val v = t.optDouble("last_value", Double.NaN)
-                    if (v.isNaN()) continue
-                    val control = t.optString("function") == "control"
-                    if (cur == null || control) cur = v
-                    if (control) break
+            val cl = StringBuilder()
+            val ks = StringBuilder()
+
+            val hc = d.optJSONObject("z3k_config")?.optJSONArray("heating_circuits")
+            if (hc != null && hc.length() > 0) {
+                // контур: выбранный ранее, иначе с «отоп»/«дом» в названии, иначе первый
+                val want = Store.get("zont_circuit")
+                var c: JSONObject? = null
+                for (i in 0 until hc.length()) {
+                    val o = hc.optJSONObject(i) ?: continue
+                    cl.append(o.optLong("id")).append(" «").append(o.optString("name")).append("»  ")
+                    if (o.optLong("id").toString() == want) c = o
+                }
+                if (c == null) {
+                    for (i in 0 until hc.length()) {
+                        val o = hc.optJSONObject(i) ?: continue
+                        val n = o.optString("name").lowercase()
+                        if (n.contains("отоп") || n.contains("дом")) { c = o; break }
+                    }
+                }
+                if (c == null) c = hc.optJSONObject(0)
+                if (c != null) {
+                    kind = "z3k"
+                    circuit = c.optLong("id")
+                    cname = c.optString("name")
+                    val zs = io?.optJSONObject("z3k-state")?.optJSONObject(circuit.toString())
+                    target = num(zs, "target_temp")
+                    if (target.isNaN()) target = num(zs, "setpoint_temp")
+                    for (k in listOf("curr_temp", "actual_temp", "temperature")) {
+                        val v = num(zs, k)
+                        if (!v.isNaN()) { cur = v; break }
+                    }
+                    if (zs != null) {
+                        val it = zs.keys()
+                        while (it.hasNext()) ks.append(it.next()).append(" ")
+                    } else ks.append("нет io.z3k-state для контура")
                 }
             }
-            val io = d.optJSONObject("io")
+            if (kind.isEmpty()) {
+                val temps = d.optJSONObject("thermostat_mode_temps")
+                val c = num(temps, "comfort")
+                if (!c.isNaN()) {
+                    kind = "comfort"
+                    target = c
+                } else if (d.has("thermostat_temp")) {
+                    kind = "temp"
+                    target = num(d, "thermostat_temp")
+                }
+            }
+
+            // текущая температура: термометр управления (как раньше), если у контура её нет
+            if (cur == null) {
+                val th = d.optJSONArray("thermometers")
+                if (th != null) {
+                    for (i in 0 until th.length()) {
+                        val t = th.getJSONObject(i)
+                        if (!t.optBoolean("is_assigned_to_slot", true)) continue
+                        if (t.isNull("last_value")) continue
+                        val v = t.optDouble("last_value", Double.NaN)
+                        if (v.isNaN()) continue
+                        val control = t.optString("function") == "control"
+                        if (cur == null || control) cur = v
+                        if (control) break
+                    }
+                }
+            }
             val st = io?.optJSONObject("last-boiler-state")
             var mode = if (d.isNull("thermostat_mode")) "" else d.optString("thermostat_mode", "")
             if (mode.isEmpty() && st != null && !st.isNull("thermostat_mode")) mode = st.optString("thermostat_mode", "")
             val on = st != null && st.optInt("boiler_work_time", 0) > 0
             val fail = st != null && st.optBoolean("fail", false)
-            val ks = StringBuilder()
-            val it = d.keys()
-            var n = 0
-            while (it.hasNext() && n < 25) {
-                ks.append(it.next()).append(" ")
-                n++
+            if (kind.isEmpty()) {
+                // для диагностики: поля устройства, похожие на температуру и z3k
+                val it = d.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    if (k.contains("temp") || k.contains("z3k") || k.contains("thermostat")) ks.append(k).append(" ")
+                }
             }
-            return ZontInfo(d.optLong("device_id"), d.optString("name"), mode, comfort, cur, on, fail, ks.toString())
+            return ZontInfo(id, d.optString("name"), mode, target, cur, on, fail, ks.toString().trim(),
+                kind, circuit, cname, cl.toString().trim())
         }
     }
 
     fun describe(): String {
         val sb = StringBuilder(name + " (ID " + id + ")")
-        if (mode.isEmpty()) {
-            sb.append(": режим не найден, поля: ").append(keys)
-            return sb.toString()
-        }
-        sb.append(": режим ").append(mode)
-        if (!comfort.isNaN()) sb.append(", комфорт ").append(fmt1(comfort)).append(" °C")
+        if (mode.isNotEmpty()) sb.append(": режим ").append(mode) else sb.append(":")
+        if (!target.isNaN()) sb.append(", уставка ").append(fmt1(target)).append(" °C")
         val c = current
         if (c != null) sb.append(", сейчас ").append(fmt1(c)).append(" °C")
         sb.append(if (boilerOn) ", котёл работает" else ", котёл не работает")
         if (fail) sb.append(", АВАРИЯ котла")
+        when (kind) {
+            "z3k" -> {
+                sb.append("\nКонтур: ").append(circuit).append(" «").append(circuitName).append("»")
+                if (circuits.isNotEmpty()) sb.append("\nВсе контуры: ").append(circuits)
+                if (target.isNaN()) sb.append("\nУставка контура не найдена, поля: ").append(keys)
+            }
+            "temp" -> sb.append("\nУставка: поле thermostat_temp")
+            "comfort" -> sb.append("\nУставка: thermostat_mode_temps.comfort")
+            else -> sb.append("\nУставка не найдена, поля: ").append(keys)
+        }
         return sb.toString()
     }
 }

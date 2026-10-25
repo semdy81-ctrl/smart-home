@@ -65,7 +65,7 @@ private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
 
 // версия кода экрана: должна совпадать с versionName в app/build.gradle
-private const val CODE_VER = "0.28"
+private const val CODE_VER = "0.29"
 private const val IDLE_MS = 10_000L
 private val AUTO_HOME = setOf("house", "shop", "yard")
 
@@ -1463,12 +1463,7 @@ class MainActivity : Activity() {
             var z: ZontInfo? = null
             if (zOn) {
                 try {
-                    val want = Store.get("zont_dev")
-                    val arr = Drivers.zont().devices()
-                    for (i in 0 until arr.length()) {
-                        val d = arr.getJSONObject(i)
-                        if (d.optLong("device_id").toString() == want) z = ZontInfo.from(d)
-                    }
+                    z = Drivers.zontInfo()
                 } catch (e: Exception) {
                 }
             }
@@ -1505,14 +1500,17 @@ class MainActivity : Activity() {
                         changed = true
                     }
                 }
-                if (zi != null && zi.mode.isNotEmpty()) {
-                    val on = zi.mode != "idle"
-                    if (on != St.houseHeat) {
-                        St.houseHeat = on
-                        changed = true
+                if (zi != null) {
+                    if (zi.mode.isNotEmpty()) {
+                        val on = zi.mode != "idle"
+                        if (on != St.houseHeat) {
+                            St.houseHeat = on
+                            changed = true
+                        }
                     }
-                    if (!zi.comfort.isNaN()) {
-                        val c = Math.round(zi.comfort).toInt()
+                    // уставку не перезаписываем сразу после нажатия ▲/▼ — прибор применяет её с задержкой
+                    if (!zi.target.isNaN() && System.currentTimeMillis() - setChangedAt > 60_000L) {
+                        val c = Math.round(zi.target).toInt()
                         if (c != St.houseSet) {
                             St.houseSet = c
                             changed = true
@@ -1562,7 +1560,8 @@ class MainActivity : Activity() {
         }
         Net.bg {
             val err: String? = try {
-                Drivers.zont().update(Store.get("zont_dev").toLong(), JSONObject().put("thermostat_mode", if (want) "comfort" else "idle"))
+                val zi = Drivers.zontInfo() ?: throw Exception("контроллер не найден")
+                Drivers.zont().update(zi.id, JSONObject().put("thermostat_mode", if (want) "comfort" else "idle"))
                 null
             } catch (e: Exception) {
                 e.message ?: e.toString()
@@ -1574,24 +1573,31 @@ class MainActivity : Activity() {
         }
     }
 
+    private var setChangedAt = 0L
+    private var setSeq = 0
+
     private fun changeSet(d: Int) {
         val v = minOf(35, maxOf(5, St.houseSet + d))
         St.houseSet = v
+        setChangedAt = System.currentTimeMillis()
         show(screen, false)
         if (!zontReady()) return
-        val heatOn = St.houseHeat
-        Net.bg {
-            val err: String? = try {
-                val p = JSONObject()
-                p.put("thermostat_mode_temps", JSONObject().put("comfort", v))
-                if (heatOn) p.put("thermostat_mode", "comfort")
-                Drivers.zont().update(Store.get("zont_dev").toLong(), p)
-                null
-            } catch (e: Exception) {
-                e.message ?: e.toString()
+        // несколько быстрых нажатий ▲/▼ — отправляем только последнее значение, через 1,5 с
+        val seq = ++setSeq
+        root.postDelayed({
+            if (seq != setSeq) return@postDelayed
+            val value = St.houseSet
+            Net.bg {
+                val err: String? = try {
+                    val zi = Drivers.zontInfo() ?: throw Exception("контроллер не найден")
+                    Drivers.zont().setTarget(zi, value)
+                    null
+                } catch (e: Exception) {
+                    e.message ?: e.toString()
+                }
+                Net.ui { toast(if (err == null) "ZONT: уставка " + value + " °C отправлена" else "ZONT: " + err) }
             }
-            if (err != null) Net.ui { toast("ZONT: " + err) }
-        }
+        }, 1500L)
     }
 
     private fun runZontCheck(out: TextView) {
@@ -1602,7 +1608,10 @@ class MainActivity : Activity() {
                 val sb = StringBuilder("Устройств ZONT: " + arr.length() + "\n")
                 for (i in 0 until arr.length()) {
                     val z = ZontInfo.from(arr.getJSONObject(i))
-                    if (i == 0) Store.put("zont_dev", z.id.toString())
+                    if (i == 0) {
+                        Store.put("zont_dev", z.id.toString())
+                        if (z.kind == "z3k") Store.put("zont_circuit", z.circuit.toString())
+                    }
                     sb.append(z.describe()).append("\n")
                 }
                 sb.toString()
