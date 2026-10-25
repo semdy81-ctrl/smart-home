@@ -65,7 +65,7 @@ private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
 
 // версия кода экрана: должна совпадать с versionName в app/build.gradle
-private const val CODE_VER = "0.29"
+private const val CODE_VER = "0.30"
 private const val IDLE_MS = 10_000L
 private val AUTO_HOME = setOf("house", "shop", "yard")
 

@@ -545,7 +545,8 @@ class Zont(private val login: String, private val password: String, private val 
                 .put("command_args", JSONObject().put("value", value))
                 .put("is_guaranteed", true))
             "temp" -> update(info.id, JSONObject().put("thermostat_temp", value))
-            else -> update(info.id, JSONObject().put("thermostat_mode_temps", JSONObject().put("comfort", value)))
+            "comfort" -> update(info.id, JSONObject().put("thermostat_mode_temps", JSONObject().put("comfort", value)))
+            else -> throw Exception("для этого прибора способ задать уставку ещё не определён — пришлите результат «Проверить ZONT»")
         }
     }
 }
@@ -642,11 +643,31 @@ class ZontInfo(val id: Long, val name: String, val mode: String, val target: Dou
             val on = st != null && st.optInt("boiler_work_time", 0) > 0
             val fail = st != null && st.optBoolean("fail", false)
             if (kind.isEmpty()) {
-                // для диагностики: поля устройства, похожие на температуру и z3k
-                val it = d.keys()
-                while (it.hasNext()) {
-                    val k = it.next()
-                    if (k.contains("temp") || k.contains("z3k") || k.contains("thermostat")) ks.append(k).append(" ")
+                // для диагностики: содержимое полей уставки (без длинного расписания)
+                for (k in listOf("thermostat_target_temps", "thermostat_ext_mode", "thermostat_temps_limits",
+                        "tempstep", "thermostat_ext_modes_config")) {
+                    if (!d.has(k)) continue
+                    val v = d.opt(k)?.toString() ?: "null"
+                    ks.append("\n").append(k).append(" = ").append(if (v.length > 400) v.take(400) + "…" else v)
+                }
+                val sch = d.optJSONObject("tempschedule")
+                if (sch != null) {
+                    val day = sch.optJSONArray("day")
+                    ks.append("\ntempschedule: ключи ")
+                    val it = sch.keys()
+                    while (it.hasNext()) ks.append(it.next()).append(" ")
+                    if (day != null) ks.append(", day[").append(day.length()).append("] = ").append(day.toString().take(200))
+                }
+                if (st != null) {
+                    ks.append("\nlast-boiler-state: ")
+                    val it = st.keys()
+                    while (it.hasNext()) {
+                        val k = it.next()
+                        val v = st.opt(k)
+                        ks.append(k)
+                        if (v !is JSONObject && v !is JSONArray) ks.append("=").append(v.toString().take(30))
+                        ks.append(" ")
+                    }
                 }
             }
             return ZontInfo(id, d.optString("name"), mode, target, cur, on, fail, ks.toString().trim(),
@@ -670,7 +691,7 @@ class ZontInfo(val id: Long, val name: String, val mode: String, val target: Dou
             }
             "temp" -> sb.append("\nУставка: поле thermostat_temp")
             "comfort" -> sb.append("\nУставка: thermostat_mode_temps.comfort")
-            else -> sb.append("\nУставка не найдена, поля: ").append(keys)
+            else -> sb.append("\nУставка не найдена. Данные прибора:").append(keys)
         }
         return sb.toString()
     }
