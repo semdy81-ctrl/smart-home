@@ -65,8 +65,8 @@ private val SCENE = 0xFF0E1319.toInt()
 private val BRK_BG = 0xFF232B35.toInt()
 
 // версия кода экрана: должна совпадать с versionName в app/build.gradle
-private const val CODE_VER = "0.31"
-private const val IDLE_MS = 10_000L
+private const val CODE_VER = "0.32"
+private const val IDLE_MS = 5_000L
 private val AUTO_HOME = setOf("house", "shop", "yard")
 
 private val NAMES = arrayOf("Дом", "Мастерская", "Хозблок", "Костровая", "Двор")
@@ -263,17 +263,22 @@ class MainActivity : Activity() {
     }
 
     // ---------- автовозврат на главный экран ----------
-    // через 10 с без касаний экраны «Дом», «Мастерская», «Двор» возвращаются на главный.
+    // через 5 с без касаний экраны «Дом», «Мастерская», «Двор» возвращаются на главный экран,
+    // и на нём выбирается плитка «Дом» (в том числе если на главном выбрана другая плитка).
     // Камеры, экран ворот (с камерой) и настройки не закрываются: там смотрят видео или вводят данные.
     private val idleReturn = Runnable {
-        if (screen in AUTO_HOME) {
-            if (hasWindowFocus()) show("main") else armIdle()   // открыт диалог — ждём
+        val need = screen in AUTO_HOME || (screen == "main" && St.selected != 0)
+        if (need) {
+            if (hasWindowFocus()) {
+                St.selected = 0
+                show("main", screen != "main")
+            } else armIdle()   // открыт диалог — ждём
         }
     }
 
     private fun armIdle() {
         root.removeCallbacks(idleReturn)
-        if (screen in AUTO_HOME) root.postDelayed(idleReturn, IDLE_MS)
+        if (screen in AUTO_HOME || screen == "main") root.postDelayed(idleReturn, IDLE_MS)
     }
 
     override fun onUserInteraction() {
